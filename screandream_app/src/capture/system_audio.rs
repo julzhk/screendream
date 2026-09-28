@@ -50,13 +50,16 @@ impl SystemAudioCapture {
         if !self.active {
             return;
         }
-        let overflow = self
-            .samples
-            .len()
-            .saturating_add(samples.len())
-            .saturating_sub(self.capacity);
+        // Keep only the newest `capacity` samples, even when one batch exceeds it.
+        let batch = &samples[samples.len().saturating_sub(self.capacity)..];
+        let overflow = (self.samples.len() + batch.len()).saturating_sub(self.capacity);
         self.samples.drain(..overflow);
-        self.samples.extend(samples.iter().copied());
+        self.samples.extend(batch.iter().copied());
+    }
+
+    /// The newest buffered samples (at most `capacity`), oldest first.
+    pub fn latest_samples(&self) -> impl Iterator<Item = f32> + '_ {
+        self.samples.iter().copied()
     }
 
     pub fn analyze_latest(&mut self, analyzer: &mut AudioFeatureAnalyzer) -> AudioFeatures {

@@ -17,3 +17,22 @@ fn granted_access_starts_and_stopping_ends_capture() {
     session.stop();
     assert!(!capture.is_active());
 }
+
+#[test]
+fn capture_keeps_only_the_newest_samples_when_a_batch_exceeds_capacity() {
+    let mut capture = SystemAudioCapture::new(4);
+    capture.start(AudioAccessState::Granted).unwrap();
+
+    capture.ingest_live_samples(&[1.0, 2.0]);
+    capture.ingest_live_samples(&[3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+    assert_eq!(
+        capture.latest_samples().collect::<Vec<_>>(),
+        [5.0, 6.0, 7.0, 8.0]
+    );
+
+    capture.ingest_live_samples(&[9.0]);
+    assert_eq!(
+        capture.latest_samples().collect::<Vec<_>>(),
+        [6.0, 7.0, 8.0, 9.0]
+    );
+}

@@ -20,7 +20,6 @@ impl AudioFeatures {
     }
 }
 
-#[derive(Debug)]
 pub struct AudioFeatureAnalyzer {
     started_at: Instant,
     smoothed_amplitude: f32,
@@ -33,6 +32,16 @@ pub struct AudioFeatureAnalyzer {
 
 /// Upper edges (Hz) of the bass, low-mid, high-mid and treble bands.
 const BAND_EDGES: [f32; 4] = [180.0, 900.0, 3_500.0, 16_000.0];
+
+impl std::fmt::Debug for AudioFeatureAnalyzer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioFeatureAnalyzer")
+            .field("smoothed_amplitude", &self.smoothed_amplitude)
+            .field("sample_rate", &self.sample_rate)
+            .field("band_peaks", &self.band_peaks)
+            .finish_non_exhaustive()
+    }
+}
 
 impl Default for AudioFeatureAnalyzer {
     fn default() -> Self {
@@ -82,7 +91,9 @@ impl AudioFeatureAnalyzer {
             .collect();
         let fft_len = spectrum.len().next_power_of_two();
         spectrum.resize(fft_len, Complex::new(0.0, 0.0));
-        self.planner.plan_fft_forward(fft_len).process(&mut spectrum);
+        self.planner
+            .plan_fft_forward(fft_len)
+            .process(&mut spectrum);
 
         let hz_per_bin = self.sample_rate / fft_len as f32;
         let mut sums = [0.0f32; 4];
@@ -109,7 +120,11 @@ impl AudioFeatureAnalyzer {
             }
             self.band_peaks[band] = (self.band_peaks[band] * 0.997).max(raw).max(1e-4);
             let level = (raw / self.band_peaks[band]).clamp(0.0, 1.0);
-            let smoothing = if level > self.smoothed_bands[band] { 0.55 } else { 0.12 };
+            let smoothing = if level > self.smoothed_bands[band] {
+                0.55
+            } else {
+                0.12
+            };
             self.smoothed_bands[band] += (level - self.smoothed_bands[band]) * smoothing;
             bands[band] = self.smoothed_bands[band].clamp(0.0, 1.0);
         }

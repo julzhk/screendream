@@ -5,7 +5,7 @@ struct Controls {
   amplitude: f32,
   glow: f32,
   bands: vec4f, // bass, low-mid, high-mid, treble
-  active: f32,
+  live: f32,
   _pad0: f32,
   _pad1: f32,
   _pad2: f32,
@@ -86,9 +86,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
   let diffuse = abs(dot(n, light));
   let rim = pow(1.0 - abs(n.z), 2.0);
   let edge = smoothstep(0.85, 1.0, max(abs(in.local.x), max(abs(in.local.y), abs(in.local.z))));
-  let energy = mix(0.25, 1.0, u.active);
+  let energy = mix(0.25, 1.0, u.live);
   var color = in.tint * (0.25 + 0.75 * diffuse) * energy;
   color += in.tint * rim * (0.4 + 1.6 * u.glow) * energy;
-  color += vec3f(1.0) * edge * 0.35 * u.bands.w * u.active;
+  color += vec3f(1.0) * edge * 0.35 * u.bands.w * u.live;
   return vec4f(color, 1.0);
 }

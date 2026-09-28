@@ -5,11 +5,12 @@ edition = "2024"
 
 [features]
 default = ["gpu-render", "macos-capture"]
-gpu-render = ["dep:wgpu"]
+gpu-render = ["dep:wgpu", "dep:glyphon"]
 macos-capture = ["dep:screencapturekit"]
 
 [dependencies]
 anyhow = "1"
+glyphon = { version = "0.8", optional = true }
 bytemuck = { version = "1", features = ["derive"] }
 ply = "0.1.0"
 pollster = "0.4"
@@ -20,3 +21,6 @@ winit = "0.30"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = { version = "1.5", features = ["macos_14_0"], optional = true }
+
+[dev-dependencies]
+naga = { version = "24", features = ["wgsl-in"] }

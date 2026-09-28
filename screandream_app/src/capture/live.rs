@@ -15,7 +15,10 @@ struct Shared {
 }
 
 impl Shared {
-    #[cfg_attr(not(all(target_os = "macos", feature = "macos-capture")), allow(dead_code))]
+    #[cfg_attr(
+        not(all(target_os = "macos", feature = "macos-capture")),
+        allow(dead_code)
+    )]
     fn push(&self, samples: impl IntoIterator<Item = f32>) {
         if let Ok(mut ring) = self.samples.lock() {
             ring.extend(samples);
@@ -117,7 +120,10 @@ mod platform {
                 SCStreamOutputType::Audio,
             );
             // Video frames are unused, but a screen handler silences "output not found" logs.
-            stream.add_output_handler(|_: CMSampleBuffer, _: SCStreamOutputType| {}, SCStreamOutputType::Screen);
+            stream.add_output_handler(
+                |_: CMSampleBuffer, _: SCStreamOutputType| {},
+                SCStreamOutputType::Screen,
+            );
             stream.start_capture().map_err(|error| {
                 eprintln!("Screendream: could not start capture: {error}");
                 AudioAccessState::Denied

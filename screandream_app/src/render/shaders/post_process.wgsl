@@ -6,7 +6,7 @@ struct Controls {
   amplitude: f32,
   glow: f32,
   bands: vec4f,
-  active: f32,
+  live: f32,
   _pad0: f32,
   _pad1: f32,
   _pad2: f32,
@@ -84,6 +84,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
 
   // Idle: desaturate and dim so a silent visualizer is never mistaken for a reacting one.
   let grey = vec3f(dot(col, vec3f(0.299, 0.587, 0.114)));
-  col = mix(grey * 0.45, col, u.active);
+  col = mix(grey * 0.45, col, u.live);
   return vec4f(col, 1.0);
 }
