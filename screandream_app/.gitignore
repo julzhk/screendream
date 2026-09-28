@@ -1,0 +1,10 @@
+target/
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
+.idea/
+*.log
+.env*
+.DS_Store
