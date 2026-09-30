@@ -5,19 +5,21 @@
 //! To add a mode: implement [`VisualizerMode`] in a new file and register it in [`build_all`].
 
 mod canyon;
+mod circuits;
 mod crystal;
 mod windmill;
 
 use crate::render::{renderer::VisualizerUniform, scene_mesh::SceneMesh};
 
 pub use canyon::CanyonMode;
+pub use circuits::CircuitsMode;
 pub use crystal::CrystalMode;
 pub use windmill::WindmillMode;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Mode shown first when the app starts.
-pub const FIRST_MODE: &str = WindmillMode::NAME;
+pub const FIRST_MODE: &str = CircuitsMode::NAME;
 
 pub struct ModeContext<'a> {
     pub device: &'a wgpu::Device,
@@ -51,6 +53,7 @@ pub fn build_all(ctx: &ModeContext, scene: &SceneMesh) -> Vec<Box<dyn Visualizer
         Box::new(CrystalMode::new(ctx, scene)),
         Box::new(CanyonMode::new(ctx)),
         Box::new(WindmillMode::new(ctx)),
+        Box::new(CircuitsMode::new(ctx)),
     ]
 }
 
@@ -66,6 +69,34 @@ pub(crate) struct PipelineSpec<'a> {
 }
 
 pub(crate) fn pipeline(ctx: &ModeContext, spec: PipelineSpec) -> wgpu::RenderPipeline {
+    pipeline_with_blend(ctx, spec, wgpu::BlendState::REPLACE)
+}
+
+/// Adds the fragment colour to what is already drawn: for glows and light trails.
+pub(crate) const ADDITIVE: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent::OVER,
+};
+
+/// Multiplies what is already drawn by the fragment colour: for vignettes and scanlines.
+pub(crate) const MULTIPLY: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::Src,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent::OVER,
+};
+
+pub(crate) fn pipeline_with_blend(
+    ctx: &ModeContext,
+    spec: PipelineSpec,
+    blend: wgpu::BlendState,
+) -> wgpu::RenderPipeline {
     ctx.device
         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(spec.label),
@@ -81,7 +112,7 @@ pub(crate) fn pipeline(ctx: &ModeContext, spec: PipelineSpec) -> wgpu::RenderPip
                 entry_point: Some(spec.fs),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: ctx.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    blend: Some(blend),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),

@@ -1,3 +1,4 @@
+pub mod fractal_curves;
 #[cfg(feature = "gpu-render")]
 pub mod gpu;
 pub mod mode_director;

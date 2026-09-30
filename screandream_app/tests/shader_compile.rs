@@ -59,3 +59,11 @@ fn windmill_shader_is_valid_wgsl() {
         include_str!("../src/render/shaders/windmill.wgsl"),
     );
 }
+
+#[test]
+fn circuits_shader_is_valid_wgsl() {
+    validate_with_common(
+        "circuits.wgsl",
+        include_str!("../src/render/shaders/circuits.wgsl"),
+    );
+}
