@@ -11,6 +11,15 @@ fn validate(name: &str, source: &str) {
     .unwrap_or_else(|error| panic!("{name}: {error:?}"));
 }
 
+/// Mode shaders are loaded with common.wgsl prepended, as `modes::shader_with_common` does.
+fn validate_with_common(name: &str, source: &str) {
+    let combined = format!(
+        "{}\n{source}",
+        include_str!("../src/render/shaders/common.wgsl")
+    );
+    validate(name, &combined);
+}
+
 #[test]
 fn visualizer_shader_is_valid_wgsl() {
     validate(
@@ -32,5 +41,21 @@ fn overlay_shader_is_valid_wgsl() {
     validate(
         "overlay.wgsl",
         include_str!("../src/render/shaders/overlay.wgsl"),
+    );
+}
+
+#[test]
+fn canyon_shader_is_valid_wgsl() {
+    validate_with_common(
+        "canyon.wgsl",
+        include_str!("../src/render/shaders/canyon.wgsl"),
+    );
+}
+
+#[test]
+fn windmill_shader_is_valid_wgsl() {
+    validate_with_common(
+        "windmill.wgsl",
+        include_str!("../src/render/shaders/windmill.wgsl"),
     );
 }

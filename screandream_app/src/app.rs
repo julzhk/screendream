@@ -1,7 +1,10 @@
 use crate::{
     analysis::audio_features::{AudioFeatureAnalyzer, AudioFeatures},
     capture::{authorization, live::LiveAudio, system_audio::SystemAudioCapture},
-    render::{gpu::GpuRenderer, overlay::OverlayFrame, renderer::Renderer, scene_mesh::SceneMesh},
+    render::{
+        gpu::GpuRenderer, mode_director::ModeDirector, modes, overlay::OverlayFrame,
+        renderer::Renderer, scene_mesh::SceneMesh,
+    },
     session::{AudioAccessState, FullScreenExitChoice, SessionState, VisualizerSession},
     ui::{full_screen_exit, overlay, start_view, status_overlay},
 };
@@ -21,8 +24,7 @@ const SILENCE_GRACE: Duration = Duration::from_millis(750);
 /// Key hints stay visible this long after the last input, then fade out.
 const HINT_VISIBLE: Duration = Duration::from_secs(4);
 const HINT_FADE: Duration = Duration::from_millis(600);
-const CONTROLS_HELP: &str =
-    "Space start/stop · F full-screen · Esc leave full-screen · S open Settings · Q quit";
+const CONTROLS_HELP: &str = "Space start/stop · M next mode · F full-screen · Esc leave full-screen · S open Settings · Q quit";
 
 pub fn run() -> anyhow::Result<()> {
     let mesh = SceneMesh::load("assets/default-scene.ply")?;
@@ -43,6 +45,7 @@ struct App {
     live: Option<LiveAudio>,
     window: Option<Arc<Window>>,
     gpu: Option<GpuRenderer>,
+    director: Option<ModeDirector>,
     started_at: Instant,
     last_usable: Option<Instant>,
     awaiting_exit_choice: bool,
@@ -63,6 +66,7 @@ impl App {
             live: None,
             window: None,
             gpu: None,
+            director: None,
             started_at: Instant::now(),
             last_usable: None,
             awaiting_exit_choice: false,
@@ -170,6 +174,13 @@ impl App {
         if features.is_usable {
             self.last_usable = Some(now);
         }
+        if let Some(next) = self
+            .director
+            .as_mut()
+            .and_then(|director| director.tick(now, features.is_usable))
+        {
+            self.switch_mode(next);
+        }
         let usable = self
             .last_usable
             .is_some_and(|at| now.duration_since(at) < SILENCE_GRACE);
@@ -182,6 +193,23 @@ impl App {
             }
         }
         self.renderer.update(&features);
+    }
+
+    fn switch_mode(&mut self, index: usize) {
+        if let Some(gpu) = &mut self.gpu {
+            gpu.set_mode(index);
+            println!("Mode: {}", gpu.mode_name());
+        }
+    }
+
+    fn next_mode(&mut self) {
+        if let Some(next) = self
+            .director
+            .as_mut()
+            .map(|director| director.next(Instant::now()))
+        {
+            self.switch_mode(next);
+        }
     }
 
     fn update_title(&mut self) {
@@ -201,7 +229,10 @@ impl App {
                 _ => authorization::recovery_message(self.session.audio_access_state).to_string(),
             }
         };
-        let title = format!("Screendream — {status}");
+        let title = match &self.gpu {
+            Some(gpu) => format!("Screendream — {} — {status}", gpu.mode_name()),
+            None => format!("Screendream — {status}"),
+        };
         if title != self.last_title {
             if let Some(window) = &self.window {
                 window.set_title(&title);
@@ -235,6 +266,7 @@ impl App {
             Key::Character(c) => match c.to_lowercase().as_str() {
                 "q" if self.awaiting_exit_choice => self.stop_visualizer(),
                 "q" => event_loop.exit(),
+                "m" => self.next_mode(),
                 "f" => {
                     let on = !self.session.full_screen;
                     self.awaiting_exit_choice = false;
@@ -277,7 +309,20 @@ impl ApplicationHandler for App {
             }
         };
         match GpuRenderer::new(window.clone(), &self.mesh) {
-            Ok(gpu) => self.gpu = Some(gpu),
+            Ok(mut gpu) => {
+                let first = gpu.mode_index(modes::FIRST_MODE).unwrap_or(0);
+                gpu.set_mode(first);
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(1, |elapsed| elapsed.as_nanos() as u64);
+                self.director = Some(ModeDirector::new(
+                    gpu.mode_count(),
+                    first,
+                    Instant::now(),
+                    seed,
+                ));
+                self.gpu = Some(gpu);
+            }
             Err(error) => {
                 eprintln!("Screendream could not initialise the GPU: {error}");
                 event_loop.exit();

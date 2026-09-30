@@ -1,5 +1,8 @@
 #[cfg(feature = "gpu-render")]
 pub mod gpu;
+pub mod mode_director;
+#[cfg(feature = "gpu-render")]
+pub mod modes;
 #[cfg(feature = "gpu-render")]
 pub mod overlay;
 pub mod renderer;

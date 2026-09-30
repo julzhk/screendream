@@ -6,8 +6,15 @@ pub struct AudioFeatures {
     pub timestamp: Duration,
     pub smoothed_amplitude: f32,
     pub band_energies: [f32; 4],
+    /// Log-spaced, auto-gained spectrum (≈30 Hz → 16 kHz), each bin in 0..1.
+    pub spectrum: [f32; SPECTRUM_BINS],
     pub is_usable: bool,
 }
+
+/// Number of log-spaced bins in [`AudioFeatures::spectrum`].
+pub const SPECTRUM_BINS: usize = 64;
+const SPECTRUM_MIN_HZ: f32 = 30.0;
+const SPECTRUM_MAX_HZ: f32 = 16_000.0;
 
 impl AudioFeatures {
     pub fn silent(timestamp: Duration) -> Self {
@@ -15,6 +22,7 @@ impl AudioFeatures {
             timestamp,
             smoothed_amplitude: 0.0,
             band_energies: [0.0; 4],
+            spectrum: [0.0; SPECTRUM_BINS],
             is_usable: false,
         }
     }
@@ -27,6 +35,8 @@ pub struct AudioFeatureAnalyzer {
     sample_rate: f32,
     band_peaks: [f32; 4],
     smoothed_bands: [f32; 4],
+    spectrum_peak: f32,
+    smoothed_spectrum: [f32; SPECTRUM_BINS],
     planner: FftPlanner<f32>,
 }
 
@@ -58,6 +68,8 @@ impl AudioFeatureAnalyzer {
             sample_rate: 48_000.0,
             band_peaks: [0.0; 4],
             smoothed_bands: [0.0; 4],
+            spectrum_peak: 0.0,
+            smoothed_spectrum: [0.0; SPECTRUM_BINS],
             planner: FftPlanner::new(),
         }
     }
@@ -129,11 +141,48 @@ impl AudioFeatureAnalyzer {
             bands[band] = self.smoothed_bands[band].clamp(0.0, 1.0);
         }
 
+        let spectrum = self.fine_spectrum(&spectrum[..fft_len / 2], hz_per_bin);
+
         AudioFeatures {
             timestamp: self.started_at.elapsed(),
             smoothed_amplitude: self.smoothed_amplitude,
             band_energies: bands,
+            spectrum,
             is_usable: amplitude >= self.silence_threshold,
         }
+    }
+
+    /// Groups FFT bins into [`SPECTRUM_BINS`] log-spaced bins with a shared auto-gain, so the
+    /// relative loudness between frequencies is preserved.
+    fn fine_spectrum(&mut self, half: &[Complex<f32>], hz_per_bin: f32) -> [f32; SPECTRUM_BINS] {
+        let ratio = SPECTRUM_MAX_HZ / SPECTRUM_MIN_HZ;
+        let mut raw = [0.0f32; SPECTRUM_BINS];
+        for (bin, value) in raw.iter_mut().enumerate() {
+            let lo = SPECTRUM_MIN_HZ * ratio.powf(bin as f32 / SPECTRUM_BINS as f32);
+            let hi = SPECTRUM_MIN_HZ * ratio.powf((bin + 1) as f32 / SPECTRUM_BINS as f32);
+            let first = ((lo / hz_per_bin) as usize).clamp(1, half.len().saturating_sub(1));
+            let last = ((hi / hz_per_bin).ceil() as usize).clamp(first + 1, half.len());
+            let slice = &half[first.min(last)..last];
+            let peak = slice.iter().map(|c| c.norm()).fold(0.0f32, f32::max);
+            // Tilt up the highs so treble is visible next to the naturally louder bass.
+            let tilt = 1.0 + 3.0 * bin as f32 / SPECTRUM_BINS as f32;
+            *value = if peak.is_finite() {
+                peak.sqrt() * tilt
+            } else {
+                0.0
+            };
+        }
+
+        let frame_peak = raw.iter().copied().fold(0.0f32, f32::max);
+        self.spectrum_peak = (self.spectrum_peak * 0.998).max(frame_peak).max(1e-4);
+        let mut out = [0.0; SPECTRUM_BINS];
+        for bin in 0..SPECTRUM_BINS {
+            let level = (raw[bin] / self.spectrum_peak).clamp(0.0, 1.0);
+            let current = &mut self.smoothed_spectrum[bin];
+            let smoothing = if level > *current { 0.6 } else { 0.15 };
+            *current += (level - *current) * smoothing;
+            out[bin] = current.clamp(0.0, 1.0);
+        }
+        out
     }
 }

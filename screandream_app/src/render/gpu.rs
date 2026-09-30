@@ -1,14 +1,11 @@
 use crate::render::{
+    modes::{self, DEPTH_FORMAT, FrameInput, ModeContext, VisualizerMode},
     overlay::{OverlayFrame, OverlayRenderer},
     renderer::VisualizerUniform,
     scene_mesh::SceneMesh,
 };
 use std::sync::Arc;
-use wgpu::util::DeviceExt;
 use winit::window::Window;
-
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-const MESH_INSTANCES: u32 = 1 + 18;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -30,11 +27,8 @@ pub struct GpuRenderer {
     depth: wgpu::TextureView,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    background: wgpu::RenderPipeline,
-    mesh: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    index_count: u32,
+    modes: Vec<Box<dyn VisualizerMode>>,
+    current: usize,
     overlay: OverlayRenderer,
 }
 
@@ -87,95 +81,14 @@ impl GpuRenderer {
                 resource: uniform_buffer.as_entire_binding(),
             }],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[&layout],
-            push_constant_ranges: &[],
-        });
-
-        let background_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("post_process.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/post_process.wgsl").into()),
-        });
-        let mesh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("visualizer.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/visualizer.wgsl").into()),
-        });
-
-        let depth_state = |write: bool| wgpu::DepthStencilState {
-            format: DEPTH_FORMAT,
-            depth_write_enabled: write,
-            depth_compare: if write {
-                wgpu::CompareFunction::Less
-            } else {
-                wgpu::CompareFunction::Always
+        let modes = modes::build_all(
+            &ModeContext {
+                device: &device,
+                format: config.format,
+                controls_layout: &layout,
             },
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        };
-        let target = [Some(wgpu::ColorTargetState {
-            format: config.format,
-            blend: Some(wgpu::BlendState::REPLACE),
-            write_mask: wgpu::ColorWrites::ALL,
-        })];
-
-        let background = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("background"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &background_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &background_shader,
-                entry_point: Some("fs_main"),
-                targets: &target,
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(depth_state(false)),
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-        let mesh = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("mesh"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &mesh_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: 12,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3],
-                }],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &mesh_shader,
-                entry_point: Some("fs_main"),
-                targets: &target,
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(depth_state(true)),
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("scene vertices"),
-            contents: bytemuck::cast_slice(&scene.vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("scene indices"),
-            contents: bytemuck::cast_slice(&scene.indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+            scene,
+        );
 
         Ok(Self {
             surface,
@@ -185,13 +98,29 @@ impl GpuRenderer {
             depth,
             uniform_buffer,
             bind_group,
-            background,
-            mesh,
-            vertex_buffer,
-            index_buffer,
-            index_count: scene.indices.len() as u32,
+            modes,
+            current: 0,
             overlay,
         })
+    }
+
+    pub fn mode_count(&self) -> usize {
+        self.modes.len()
+    }
+
+    pub fn mode_index(&self, name: &str) -> Option<usize> {
+        self.modes.iter().position(|mode| mode.name() == name)
+    }
+
+    pub fn mode_name(&self) -> &'static str {
+        self.modes[self.current].name()
+    }
+
+    pub fn set_mode(&mut self, index: usize) {
+        if index < self.modes.len() {
+            self.current = index;
+            self.modes[index].activate();
+        }
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -222,6 +151,15 @@ impl GpuRenderer {
         };
         self.queue
             .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&controls));
+        let mode = &mut self.modes[self.current];
+        mode.prepare(
+            &self.queue,
+            &FrameInput {
+                uniform,
+                time,
+                active,
+            },
+        );
 
         let frame = match self.surface.get_current_texture() {
             Ok(frame) => frame,
@@ -263,12 +201,7 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.set_pipeline(&self.background);
-            pass.draw(0..3, 0..1);
-            pass.set_pipeline(&self.mesh);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.index_count, 0, 0..MESH_INSTANCES);
+            self.modes[self.current].draw(&mut pass);
         }
         self.overlay.prepare(
             &self.device,

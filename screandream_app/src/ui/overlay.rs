@@ -34,7 +34,8 @@ pub struct OverlayContent {
     pub hint: Option<String>,
 }
 
-pub const ACTIVE_HINT: &str = "Space  Stop    ·    Esc  Leave full-screen    ·    Q  Quit";
+pub const ACTIVE_HINT: &str =
+    "Space  Stop    ·    M  Next mode    ·    Esc  Leave full-screen    ·    Q  Quit";
 
 pub fn content(
     session: &VisualizerSession,
