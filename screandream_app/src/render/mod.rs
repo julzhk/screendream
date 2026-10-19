@@ -1,3 +1,5 @@
+pub mod automata_sim;
+pub mod bubble_sim;
 pub mod fractal_curves;
 #[cfg(feature = "gpu-render")]
 pub mod gpu;

@@ -158,6 +158,7 @@ impl GpuRenderer {
                 uniform,
                 time,
                 active,
+                aspect: controls.aspect,
             },
         );
 

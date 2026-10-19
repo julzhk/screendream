@@ -1,0 +1,2 @@
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Screendream uses live system audio only to animate your visualizer. It never records or transmits audio.</string>

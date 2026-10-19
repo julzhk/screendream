@@ -67,3 +67,19 @@ fn circuits_shader_is_valid_wgsl() {
         include_str!("../src/render/shaders/circuits.wgsl"),
     );
 }
+
+#[test]
+fn bubbles_shader_is_valid_wgsl() {
+    validate_with_common(
+        "bubbles.wgsl",
+        include_str!("../src/render/shaders/bubbles.wgsl"),
+    );
+}
+
+#[test]
+fn automata_shader_is_valid_wgsl() {
+    validate_with_common(
+        "automata.wgsl",
+        include_str!("../src/render/shaders/automata.wgsl"),
+    );
+}

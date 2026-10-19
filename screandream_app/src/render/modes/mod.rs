@@ -4,6 +4,8 @@
 //!
 //! To add a mode: implement [`VisualizerMode`] in a new file and register it in [`build_all`].
 
+mod automata;
+mod bubbles;
 mod canyon;
 mod circuits;
 mod crystal;
@@ -11,6 +13,8 @@ mod windmill;
 
 use crate::render::{renderer::VisualizerUniform, scene_mesh::SceneMesh};
 
+pub use automata::AutomataMode;
+pub use bubbles::BubblesMode;
 pub use canyon::CanyonMode;
 pub use circuits::CircuitsMode;
 pub use crystal::CrystalMode;
@@ -19,7 +23,7 @@ pub use windmill::WindmillMode;
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Mode shown first when the app starts.
-pub const FIRST_MODE: &str = CircuitsMode::NAME;
+pub const FIRST_MODE: &str = AutomataMode::NAME;
 
 pub struct ModeContext<'a> {
     pub device: &'a wgpu::Device,
@@ -32,6 +36,8 @@ pub struct FrameInput<'a> {
     pub uniform: &'a VisualizerUniform,
     pub time: f32,
     pub active: bool,
+    /// Width / height of the render target.
+    pub aspect: f32,
 }
 
 pub trait VisualizerMode {
@@ -54,6 +60,8 @@ pub fn build_all(ctx: &ModeContext, scene: &SceneMesh) -> Vec<Box<dyn Visualizer
         Box::new(CanyonMode::new(ctx)),
         Box::new(WindmillMode::new(ctx)),
         Box::new(CircuitsMode::new(ctx)),
+        Box::new(BubblesMode::new(ctx)),
+        Box::new(AutomataMode::new(ctx)),
     ]
 }
 

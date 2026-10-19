@@ -24,3 +24,16 @@ screencapturekit = { version = "1.5", features = ["macos_14_0"], optional = true
 
 [dev-dependencies]
 naga = { version = "24", features = ["wgsl-in"] }
+
+# macOS .app bundle, built with `cargo bundle --release` (see README.md).
+[package.metadata.bundle]
+name = "Screendream"
+identifier = "com.screendream.visualizer"
+icon = ["resources/icon/icon_*.png"]
+resources = ["assets/default-scene.ply"]
+category = "public.app-category.entertainment"
+short_description = "Audio-reactive visualizer driven by live system audio."
+
+[package.metadata.bundle.osx]
+minimum_system_version = "14.0"
+info_plist_exts = ["resources/Info.plist.ext"]
