@@ -1,24 +1,31 @@
 //! A screen-filling clockwork mechanism of brass, gold, steel and copper under wandering
 //! lamps. The gear trains come from `render::gear_sim`; this mode draws them back to front,
-//! each gear preceded by its soft shadow on the layer beneath, so sinking gears slip under
-//! the mechanism and arriving ones cast a widening shadow as they drop in.
+//! each gear preceded by its soft shadow on the layer beneath, so arriving and departing
+//! gears cast a shadow that widens with their height. Linkages ride above the gears, then
+//! steam drifts over everything and sparks glow through it.
 
 use super::{
     ADDITIVE, FrameInput, MULTIPLY, ModeContext, PipelineSpec, VisualizerMode, pipeline,
     pipeline_with_blend, pipeline_with_depth, shader_with_common,
 };
 use crate::render::gear_sim::{
-    DUST_MOTES, Drive, FOCAL, GearSim, LAYER_Z, LIGHTS, MAX_GEARS, MAX_SPARKS, PLATE_Z,
+    DUST_MOTES, Drive, FOCAL, Gear, GearSim, LAYER_Z, LAYERS, LIGHTS, MAX_GEARS, MAX_LINKAGES,
+    MAX_PUFFS, MAX_SPARKS, PLATE_Z,
 };
+
+/// Every linkage is built from at most this many bars.
+const MAX_BARS: usize = MAX_LINKAGES * 8;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct WorksParams {
     /// Camera x, y, roll, focal length.
     cam: [f32; 4],
+    /// Position and spotlight cone cosine (-2 for lamps).
     light_pos: [[f32; 4]; LIGHTS],
     light_col: [[f32; 4]; LIGHTS],
-    /// Beat pulse, plate depth.
+    light_dir: [[f32; 4]; LIGHTS],
+    /// Beat pulse, plate depth, top layer depth.
     misc: [f32; 4],
 }
 
@@ -41,6 +48,23 @@ struct SparkInstance {
     c: [f32; 4],
 }
 
+/// One linkage part; see `BarIn` in clockwork.wgsl. Shares the spark layout.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct BarInstance {
+    a: [f32; 4],
+    b: [f32; 4],
+    c: [f32; 4],
+}
+
+/// One billow of smoke; see `PuffIn` in clockwork.wgsl. Shares the spark layout.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct PuffInstance {
+    a: [f32; 4],
+    b: [f32; 4],
+    c: [f32; 4],
+}
 const GEAR_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
     wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
 const SPARK_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
@@ -51,6 +75,11 @@ pub struct ClockworkMode {
     jewels: wgpu::RenderPipeline,
     shadows: wgpu::RenderPipeline,
     gears: wgpu::RenderPipeline,
+    fading_gears: wgpu::RenderPipeline,
+    bar_shadows: wgpu::RenderPipeline,
+    bars: wgpu::RenderPipeline,
+    puffs: wgpu::RenderPipeline,
+    steam: wgpu::RenderPipeline,
     sparks: wgpu::RenderPipeline,
     glow: wgpu::RenderPipeline,
     vignette: wgpu::RenderPipeline,
@@ -58,8 +87,14 @@ pub struct ClockworkMode {
     params_buffer: wgpu::Buffer,
     gear_buffer: wgpu::Buffer,
     spark_buffer: wgpu::Buffer,
+    bar_buffer: wgpu::Buffer,
+    puff_buffer: wgpu::Buffer,
     gear_data: Vec<GearInstance>,
+    /// Gears from this index on are fading in or out, drawn blended after the linkages.
+    first_fading: usize,
     spark_data: Vec<SparkInstance>,
+    bar_data: Vec<BarInstance>,
+    puff_data: Vec<PuffInstance>,
     sim: GearSim,
     last_time: Option<f32>,
 }
@@ -90,6 +125,14 @@ impl ClockworkMode {
         let spark_buffer = instance_buffer(
             "clockwork sparks",
             (MAX_SPARKS + DUST_MOTES) * std::mem::size_of::<SparkInstance>(),
+        );
+        let bar_buffer = instance_buffer(
+            "clockwork bars",
+            MAX_BARS * std::mem::size_of::<BarInstance>(),
+        );
+        let puff_buffer = instance_buffer(
+            "clockwork puffs",
+            MAX_PUFFS * std::mem::size_of::<PuffInstance>(),
         );
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("clockwork"),
@@ -129,6 +172,11 @@ impl ClockworkMode {
         }];
         let spark_layout = [wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<SparkInstance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &SPARK_ATTRIBUTES,
+        }];
+        let puff_layout = [wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<PuffInstance>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &SPARK_ATTRIBUTES,
         }];
@@ -184,6 +232,46 @@ impl ClockworkMode {
             ADDITIVE,
             wgpu::CompareFunction::Less,
         );
+        // Fading gears blend over what is behind them without hiding what comes later.
+        let fading_gears = pipeline_with_depth(
+            ctx,
+            spec(
+                "clockwork fading gears",
+                "vs_gear",
+                "fs_gear",
+                &gear_layout,
+                false,
+            ),
+            wgpu::BlendState::ALPHA_BLENDING,
+            wgpu::CompareFunction::Less,
+        );
+        let bar_shadows = pipeline_with_depth(
+            ctx,
+            spec(
+                "clockwork bar shadows",
+                "vs_bar_shadow",
+                "fs_bar_shadow",
+                &spark_layout,
+                false,
+            ),
+            MULTIPLY,
+            wgpu::CompareFunction::Less,
+        );
+        let bars = pipeline(
+            ctx,
+            spec("clockwork bars", "vs_bar", "fs_bar", &spark_layout, true),
+        );
+        let puffs = pipeline_with_depth(
+            ctx,
+            spec("clockwork puffs", "vs_puff", "fs_puff", &puff_layout, false),
+            wgpu::BlendState::ALPHA_BLENDING,
+            wgpu::CompareFunction::Less,
+        );
+        let steam = pipeline_with_blend(
+            ctx,
+            spec("clockwork steam", "vs_screen", "fs_steam", &[], false),
+            wgpu::BlendState::ALPHA_BLENDING,
+        );
         let glow = pipeline_with_blend(
             ctx,
             spec("clockwork glow", "vs_screen", "fs_glow", &[], false),
@@ -200,6 +288,11 @@ impl ClockworkMode {
             jewels,
             shadows,
             gears,
+            fading_gears,
+            bar_shadows,
+            bars,
+            puffs,
+            steam,
             sparks,
             glow,
             vignette,
@@ -207,8 +300,13 @@ impl ClockworkMode {
             params_buffer,
             gear_buffer,
             spark_buffer,
+            bar_buffer,
+            puff_buffer,
             gear_data: Vec::with_capacity(MAX_GEARS),
+            first_fading: 0,
             spark_data: Vec::with_capacity(MAX_SPARKS + DUST_MOTES),
+            bar_data: Vec::with_capacity(MAX_BARS),
+            puff_data: Vec::with_capacity(MAX_PUFFS),
             sim: new_sim(),
             last_time: None,
         }
@@ -216,8 +314,15 @@ impl ClockworkMode {
 
     fn build_instances(&mut self) {
         // Back to front, so each shadow falls on what is already drawn beneath it.
+        // Solid gears first, then the fading ones; each group back to front.
         let mut gears: Vec<_> = self.sim.gears().map(|(_, g)| *g).collect();
-        gears.sort_by(|a, b| b.pos[2].total_cmp(&a.pos[2]));
+        let fading = |g: &Gear| g.fade < 0.999;
+        gears.sort_by(|a, b| {
+            fading(a)
+                .cmp(&fading(b))
+                .then(b.pos[2].total_cmp(&a.pos[2]))
+        });
+        self.first_fading = gears.iter().position(fading).unwrap_or(gears.len());
         self.gear_data.clear();
         for g in &gears {
             let receiver = LAYER_Z
@@ -236,10 +341,15 @@ impl ClockworkMode {
 
         self.spark_data.clear();
         for s in self.sim.sparks() {
+            let (size, kind, life) = if s.ember {
+                (0.008, 2.0, 1.0 - s.age / (s.life * 2.5))
+            } else {
+                (0.005 + 0.004 * s.life.fract(), 0.0, 1.0 - s.age / s.life)
+            };
             self.spark_data.push(SparkInstance {
-                a: [s.pos[0], s.pos[1], s.pos[2], 0.006],
-                b: [s.vel[0], s.vel[1], s.vel[2], 0.0],
-                c: [1.0 - s.age / s.life, 0.0, 0.0, 0.0],
+                a: [s.pos[0], s.pos[1], s.pos[2], size],
+                b: [s.vel[0], s.vel[1], s.vel[2], kind],
+                c: [life, 0.0, 0.0, 0.0],
             });
         }
         for m in self.sim.motes() {
@@ -247,6 +357,28 @@ impl ClockworkMode {
                 a: [m.pos[0], m.pos[1], m.pos[2], 0.004],
                 b: [0.0, 0.0, 0.0, 1.0],
                 c: [m.age / m.life, 0.0, 0.0, 0.0],
+            });
+        }
+
+        self.bar_data.clear();
+        for b in self.sim.bars().iter().take(MAX_BARS) {
+            self.bar_data.push(BarInstance {
+                a: [b.a[0], b.a[1], b.z, b.width],
+                b: [
+                    b.b[0],
+                    b.b[1],
+                    b.style as u8 as f32,
+                    b.material as u8 as f32,
+                ],
+                c: [b.seed, 0.0, 0.0, 0.0],
+            });
+        }
+        self.puff_data.clear();
+        for p in self.sim.puffs() {
+            self.puff_data.push(PuffInstance {
+                a: [p.pos[0], p.pos[1], p.pos[2], p.size],
+                b: [p.age / p.life, p.seed, 0.0, 0.0],
+                c: [p.tint[0], p.tint[1], p.tint[2], 0.0],
             });
         }
     }
@@ -283,6 +415,7 @@ impl VisualizerMode for ClockworkMode {
         // A slow drift across the mechanism shows off the parallax between layers.
         let t = frame.time;
         let shake = self.sim.shake();
+        let lights = *self.sim.lights();
         let params = WorksParams {
             cam: [
                 0.18 * (t * 0.05).sin() + shake[0],
@@ -290,15 +423,10 @@ impl VisualizerMode for ClockworkMode {
                 0.03 * (t * 0.04).sin(),
                 FOCAL,
             ],
-            light_pos: self
-                .sim
-                .lights()
-                .map(|l| [l.pos[0], l.pos[1], l.pos[2], 0.0]),
-            light_col: self
-                .sim
-                .lights()
-                .map(|l| [l.color[0], l.color[1], l.color[2], 0.0]),
-            misc: [self.sim.beat_pulse(), PLATE_Z, 0.0, 0.0],
+            light_pos: lights.map(|l| [l.pos[0], l.pos[1], l.pos[2], l.cone.unwrap_or(-2.0)]),
+            light_col: lights.map(|l| [l.color[0], l.color[1], l.color[2], 0.0]),
+            light_dir: lights.map(|l| [l.dir[0], l.dir[1], l.dir[2], 0.0]),
+            misc: [self.sim.beat_pulse(), PLATE_Z, LAYER_Z[LAYERS - 1], 0.0],
         };
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
 
@@ -309,6 +437,8 @@ impl VisualizerMode for ClockworkMode {
             0,
             bytemuck::cast_slice(&self.spark_data),
         );
+        queue.write_buffer(&self.bar_buffer, 0, bytemuck::cast_slice(&self.bar_data));
+        queue.write_buffer(&self.puff_buffer, 0, bytemuck::cast_slice(&self.puff_data));
     }
 
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -320,13 +450,38 @@ impl VisualizerMode for ClockworkMode {
             pass.set_vertex_buffer(0, self.gear_buffer.slice(..));
             pass.set_pipeline(&self.jewels);
             pass.draw(0..6, 0..gears);
-            for i in 0..gears {
+            for i in 0..self.first_fading as u32 {
                 pass.set_pipeline(&self.shadows);
                 pass.draw(0..6, i..i + 1);
                 pass.set_pipeline(&self.gears);
                 pass.draw(0..6, i..i + 1);
             }
         }
+        let bars = self.bar_data.len() as u32;
+        if bars > 0 {
+            pass.set_vertex_buffer(0, self.bar_buffer.slice(..));
+            pass.set_pipeline(&self.bar_shadows);
+            pass.draw(0..6, 0..bars);
+            pass.set_pipeline(&self.bars);
+            pass.draw(0..6, 0..bars);
+        }
+        if (self.first_fading as u32) < gears {
+            pass.set_vertex_buffer(0, self.gear_buffer.slice(..));
+            for i in self.first_fading as u32..gears {
+                pass.set_pipeline(&self.shadows);
+                pass.draw(0..6, i..i + 1);
+                pass.set_pipeline(&self.fading_gears);
+                pass.draw(0..6, i..i + 1);
+            }
+        }
+        // Steam over the mechanism, then sparks glowing through it.
+        if !self.puff_data.is_empty() {
+            pass.set_pipeline(&self.puffs);
+            pass.set_vertex_buffer(0, self.puff_buffer.slice(..));
+            pass.draw(0..6, 0..self.puff_data.len() as u32);
+        }
+        pass.set_pipeline(&self.steam);
+        pass.draw(0..3, 0..1);
         if !self.spark_data.is_empty() {
             pass.set_pipeline(&self.sparks);
             pass.set_vertex_buffer(0, self.spark_buffer.slice(..));

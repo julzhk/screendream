@@ -12,9 +12,15 @@
 //! One drive angle turns the whole train. It creeps forward with the music's energy, ticks
 //! forward with a springy overshoot on every beat, and reverses every few bars or on a big hit.
 //!
-//! Now and then a gear at the end of a train disengages: it slides out of mesh, sinks into the
-//! mechanism under its neighbours and is gone. A replacement of a different size drops in from
-//! above the mechanism, already turning in step, and lands with a clunk and a shower of sparks.
+//! Every second or so a gear at the end of a train in the top layer disengages: it slides out
+//! of mesh and is lifted up and away over the mechanism. A replacement of a different size
+//! drops in from above, already turning in step, and lands with a clunk and a shower of sparks.
+//!
+//! Crank pins on some top-layer gears work [`Linkage`]s just above the gears: walking beams
+//! that rock on a pivot and pump a piston, plain crank-and-rod pistons, and scotch yokes. Each
+//! cylinder chuffs steam at the end of its stroke; reversals vent big clouds. Sparks fly at
+//! landings, reversals, on every beat and in a steady treble-driven grind, with slow embers
+//! drifting up among the dust.
 
 use crate::render::sim_math::Rng;
 use std::f32::consts::TAU;
@@ -30,9 +36,24 @@ pub const LAYER_PITCH: [f32; LAYERS] = [0.06, 0.07, 0.055];
 pub const FOCAL: f32 = 3.75;
 /// Replacements start this far from the camera, above everything.
 pub const ARRIVE_Z: f32 = 1.4;
-pub const MAX_SPARKS: usize = 240;
-pub const DUST_MOTES: usize = 90;
-pub const LIGHTS: usize = 3;
+pub const MAX_SPARKS: usize = 1500;
+pub const DUST_MOTES: usize = 320;
+pub const MAX_PUFFS: usize = 180;
+pub const MAX_LINKAGES: usize = 4;
+/// Linkages work in this plane, just above the top layer of gears.
+pub const LINK_Z: f32 = 3.12;
+/// Three wandering lamps followed by two spotlights strafing the mechanism.
+pub const LIGHTS: usize = 5;
+/// Puffs released per second by the chimney vents, between chuffs and bursts.
+const VENT_RATE: f32 = 7.0;
+/// Industrial smoke colours: greys, verdigris and cobalt blue.
+pub const SMOKE_TINTS: [[f32; 3]; 5] = [
+    [0.55, 0.56, 0.58],
+    [0.38, 0.39, 0.42],
+    [0.33, 0.62, 0.52],
+    [0.22, 0.45, 0.4],
+    [0.24, 0.36, 0.85],
+];
 /// Half-size of the area kept filled, in screen units, with room for the camera's drift.
 const FILL_HALF: [f32; 2] = [2.45, 1.3];
 /// Clearance between gears that don't mesh.
@@ -42,8 +63,14 @@ const MAX_TEETH: u32 = 96;
 /// Keep every gear's speed within this factor of the drive.
 const MAX_RATIO: f32 = 6.0;
 const MIN_RATIO: f32 = 0.06;
-const LEAVE_TIME: f32 = 2.8;
-const ARRIVE_TIME: f32 = 2.2;
+const LEAVE_TIME: f32 = 2.4;
+const ARRIVE_TIME: f32 = 2.6;
+/// Arrivals hover while fading in for this share of their time, then fall.
+const ARRIVE_HOVER: f32 = 0.2;
+/// Arrivals land at this point in their time, then bounce.
+const ARRIVE_LAND: f32 = 0.75;
+/// Departures fade out over the last part of their path.
+const LEAVE_FADE_FROM: f32 = 0.7;
 /// Drive spring: snappy with a little overshoot, like an escapement's tick.
 const DRIVE_STIFFNESS: f32 = 90.0;
 const DRIVE_DAMPING: f32 = 0.45;
@@ -140,7 +167,7 @@ pub struct Gear {
     /// Angular velocity, radians per second.
     pub spin: f32,
     pub motion: Motion,
-    /// Brightness: sinking gears fall into shadow.
+    /// Opacity: arrivals fade in before they fall, departures fade out at the end of their path.
     pub fade: f32,
     leave_from: [f32; 3],
     leave_to: [f32; 3],
@@ -176,12 +203,97 @@ pub struct Particle {
     pub life: f32,
     /// Sparks are hot streaks; motes just catch the light.
     pub spark: bool,
+    /// Embers float up slowly instead of falling.
+    pub ember: bool,
+}
+
+/// A billow of steam, expanding and rising as it fades.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Puff {
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    pub age: f32,
+    pub life: f32,
+    pub size: f32,
+    pub seed: f32,
+    pub tint: [f32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BarStyle {
+    /// Connecting rod with a pin eye at each end.
+    Rod = 0,
+    /// Riveted crossbeam with a lattice of cut-outs.
+    Truss = 1,
+    /// Steam cylinder: a ribbed tube with bolted end flanges.
+    Cylinder = 2,
+    /// Crosshead or guide block.
+    Block = 3,
+    /// Round boss: a pivot pedestal or crank pin.
+    Boss = 4,
+    /// Slotted yoke that a crank pin slides along.
+    Yoke = 5,
+}
+
+/// One rigid part of a linkage, drawn as a capsule from `a` to `b`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bar {
+    pub a: [f32; 2],
+    pub b: [f32; 2],
+    pub z: f32,
+    pub width: f32,
+    pub style: BarStyle,
+    pub material: Material,
+    pub seed: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkageKind {
+    /// A crossbeam rocking on a central pivot: one end is driven by a rod from the crank,
+    /// the other pumps a piston.
+    WalkingBeam,
+    /// Crank, connecting rod and piston.
+    SliderCrank,
+    /// The crank pin slides in a slotted yoke, driving a rod back and forth.
+    ScotchYoke,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Linkage {
+    pub kind: LinkageKind,
+    /// The gear whose face carries the crank pin.
+    pub driver: usize,
+    pub crank: f32,
+    phase: f32,
+    /// Main direction of the mechanism, away from the driving gear.
+    axis: [f32; 2],
+    /// Beam pivot and half-length, for walking beams.
+    pub pivot: [f32; 2],
+    pub beam_half: f32,
+    /// Length of the rod from the crank (or beam end) to the piston.
+    pub rod: f32,
+    /// Length of the rod from the crank pin to the beam.
+    pub drive_rod: f32,
+    slider_origin: [f32; 2],
+    // Current joint positions.
+    pub crank_pin: [f32; 2],
+    pub beam_ends: [[f32; 2]; 2],
+    pub piston: [f32; 2],
+    /// Piston travel along the axis, and which way it last moved, for steam chuffs.
+    travel: f32,
+    moving: f32,
+    material: Material,
+    seed: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Light {
     pub pos: [f32; 3],
     pub color: [f32; 3],
+    /// Where a spotlight points; unused for lamps.
+    pub dir: [f32; 3],
+    /// Cosine of a spotlight's half-angle, or `None` for a lamp shining every way.
+    pub cone: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -204,6 +316,10 @@ pub struct GearSim {
     gears: Vec<Option<Gear>>,
     sparks: Vec<Particle>,
     motes: Vec<Particle>,
+    puffs: Vec<Puff>,
+    linkages: Vec<Linkage>,
+    bars: Vec<Bar>,
+    grind_debt: f32,
     rng: Rng,
     time: f32,
     /// The drive angle every engaged gear follows, and its target and velocity.
@@ -230,6 +346,11 @@ pub struct GearSim {
     lights: [Light; LIGHTS],
     swaps: u32,
     reversals: u32,
+    /// How fast the train runs since the last reversal.
+    speed_scale: f32,
+    /// Chimney vents: where they are and the colour of their smoke.
+    vents: Vec<([f32; 2], [f32; 3])>,
+    vent_debt: f32,
 }
 
 impl GearSim {
@@ -238,6 +359,10 @@ impl GearSim {
             gears: vec![None; MAX_GEARS],
             sparks: Vec::with_capacity(MAX_SPARKS),
             motes: Vec::with_capacity(DUST_MOTES),
+            puffs: Vec::with_capacity(MAX_PUFFS),
+            linkages: Vec::with_capacity(MAX_LINKAGES),
+            bars: Vec::new(),
+            grind_debt: 0.0,
             rng: Rng::new(seed),
             time: 0.0,
             drive: 0.0,
@@ -263,17 +388,29 @@ impl GearSim {
             lights: [Light {
                 pos: [0.0, 0.0, 2.0],
                 color: [1.0; 3],
+                dir: [0.0, 0.0, 1.0],
+                cone: None,
             }; LIGHTS],
+            speed_scale: 1.0,
+            vents: Vec::new(),
+            vent_debt: 0.0,
             swaps: 0,
             reversals: 0,
         };
         sim.build();
         sim.target_count = sim.count();
+        sim.update_angles(0.0);
+        sim.add_linkages();
+        for _ in 0..5 {
+            let at = [sim.rng.uniform(-1.5, 1.5), sim.rng.uniform(-0.9, 0.6)];
+            let tint = SMOKE_TINTS[sim.rng.pick(SMOKE_TINTS.len())];
+            sim.vents.push((at, tint));
+        }
         for _ in 0..DUST_MOTES {
             let mote = sim.new_mote();
             sim.motes.push(mote);
         }
-        sim.update_angles(0.0);
+        sim.update_linkages();
         sim.move_lights(0.0);
         sim
     }
@@ -299,6 +436,19 @@ impl GearSim {
 
     pub fn motes(&self) -> &[Particle] {
         &self.motes
+    }
+
+    pub fn puffs(&self) -> &[Puff] {
+        &self.puffs
+    }
+
+    pub fn linkages(&self) -> &[Linkage] {
+        &self.linkages
+    }
+
+    /// Every rigid part of every linkage, in its current position.
+    pub fn bars(&self) -> &[Bar] {
+        &self.bars
     }
 
     pub fn lights(&self) -> &[Light; LIGHTS] {
@@ -328,6 +478,11 @@ impl GearSim {
         self.swaps
     }
 
+    /// Speed multiplier picked at the last reversal.
+    pub fn speed_scale(&self) -> f32 {
+        self.speed_scale
+    }
+
     pub fn reversals(&self) -> u32 {
         self.reversals
     }
@@ -343,8 +498,11 @@ impl GearSim {
         self.turn(dt, energy, beat);
         self.swing_balance(dt, beat);
         self.update_angles(dt);
+        self.update_linkages();
         self.update_motion(dt);
         self.schedule_swaps(dt, energy, beat);
+        self.spray(dt, drive.treble, beat);
+        self.vent(dt, energy);
         self.update_particles(dt, drive.treble);
         self.move_lights(energy);
         self.shake *= (-6.0 * dt).exp();
@@ -616,19 +774,23 @@ impl GearSim {
 
     fn turn(&mut self, dt: f32, energy: f32, beat: Option<f32>) {
         self.flip_cooldown -= dt;
-        self.drive_target += self.direction * (0.1 + 0.5 * energy) * dt;
+        let pace = self.direction * self.speed_scale;
+        self.drive_target += pace * (0.1 + 0.5 * energy) * dt;
         if let Some(strength) = beat {
-            // Every few bars, or on a big hit, the whole train reverses.
-            let bar_end = self.beats.is_multiple_of(16);
-            let big_hit = strength > 1.2 && self.rng.next_f32() < 0.35;
+            // Every bar or so, or on a big hit, the whole train reverses and picks a new
+            // speed, from a crawl to a race.
+            let bar_end = self.beats.is_multiple_of(4) && self.rng.next_f32() < 0.6;
+            let big_hit = strength > 1.1 && self.rng.next_f32() < 0.6;
             if self.flip_cooldown <= 0.0 && (bar_end || big_hit) {
                 self.direction = -self.direction;
-                self.flip_cooldown = 4.0;
+                self.speed_scale = self.rng.uniform(0.35, 2.4);
+                self.flip_cooldown = 1.2;
                 self.reversals += 1;
                 self.grind_sparks();
             }
             // Tick forward.
-            self.drive_target += self.direction * 0.22 * strength.min(1.2);
+            let pace = self.direction * self.speed_scale.sqrt();
+            self.drive_target += pace * 0.22 * strength.min(1.2);
         }
         let damping = 2.0 * DRIVE_DAMPING * DRIVE_STIFFNESS.sqrt();
         let accel = DRIVE_STIFFNESS * (self.drive_target - self.drive) - damping * self.drive_vel;
@@ -674,6 +836,7 @@ impl GearSim {
 
     fn has_dependents(&self, i: usize) -> bool {
         self.gears().any(|(_, g)| g.driver == Some(i))
+            || self.linkages.iter().any(|l| l.driver == i)
     }
 
     fn visible(&self, g: &Gear) -> bool {
@@ -683,11 +846,11 @@ impl GearSim {
 
     fn schedule_swaps(&mut self, dt: f32, energy: f32, beat: Option<f32>) {
         self.swap_timer -= dt * (0.6 + energy);
-        if beat.is_some_and(|s| s > 1.1) && self.rng.next_f32() < 0.15 {
+        if beat.is_some_and(|s| s > 0.9) && self.rng.next_f32() < 0.5 {
             self.swap_timer = 0.0;
         }
         if self.swap_timer <= 0.0 {
-            self.swap_timer = self.rng.uniform(3.0, 7.0);
+            self.swap_timer = self.rng.uniform(0.3, 0.7);
             self.start_swap();
         }
 
@@ -709,13 +872,13 @@ impl GearSim {
         // Keep the mechanism full: fill any gaps left by swaps that found no fit.
         self.top_up_timer -= dt;
         if self.top_up_timer <= 0.0 {
-            self.top_up_timer = 1.5;
+            self.top_up_timer = 0.4;
             let arriving = self
                 .gears()
                 .filter(|(_, g)| matches!(g.motion, Motion::Arriving { .. }))
                 .count();
-            if self.count() < self.target_count && arriving < 2 {
-                let layer = self.rng.pick(LAYERS);
+            if self.count() < self.target_count && arriving < 6 {
+                let layer = LAYERS - 1;
                 for _ in 0..80 {
                     if let Some(slot) = self.grow_in(layer, None) {
                         self.begin_arrival(slot);
@@ -731,6 +894,7 @@ impl GearSim {
             .gears()
             .filter(|&(i, g)| {
                 g.engaged()
+                    && g.layer == LAYERS - 1
                     && g.driver.is_some()
                     && g.kind != GearKind::Balance
                     && self.visible(g)
@@ -747,7 +911,7 @@ impl GearSim {
         let parent = self.gears[driver].unwrap_or(g);
         let heading = (g.home[1] - parent.home[1]).atan2(g.home[0] - parent.home[0]);
 
-        // Slide out of mesh, then sink under the nearest neighbour in the same layer.
+        // Slide out of mesh, then lift up and away over the mechanism.
         let out = if g.on_axle {
             0.0
         } else {
@@ -758,30 +922,26 @@ impl GearSim {
             g.home[1] + heading.sin() * out,
             LAYER_Z[g.layer],
         ];
-        let neighbour = self
-            .gears()
-            .filter(|&(j, n)| j != i && j != driver && n.layer == g.layer && n.engaged())
-            .min_by(|a, b| dist2(a.1.home, g.home).total_cmp(&dist2(b.1.home, g.home)))
-            .map(|(_, n)| n.home)
-            .unwrap_or(parent.home);
+        let away = self.rng.uniform(0.0, TAU);
+        let drift = self.rng.uniform(0.5, 1.1);
         let to = [
-            from[0] + (neighbour[0] - from[0]) * 0.55,
-            from[1] + (neighbour[1] - from[1]) * 0.55,
-            PLATE_Z - 0.03,
+            from[0] + away.cos() * drift,
+            from[1] + away.sin() * drift,
+            ARRIVE_Z,
         ];
         let gear = self.gears[i].as_mut().unwrap();
         gear.motion = Motion::Leaving { t: 0.0 };
         gear.leave_from = from;
         gear.leave_to = to;
         self.swaps += 1;
-        self.burst([from[0], from[1], from[2] - 0.05], 6, 0.6);
+        self.burst([from[0], from[1], from[2] - 0.05], 24, 0.8);
         self.pending.push(Pending {
             layer: g.layer,
             driver,
             on_axle: g.on_axle,
             heading,
             old_teeth: g.teeth,
-            delay: 0.9,
+            delay: 0.5,
         });
     }
 
@@ -829,6 +989,7 @@ impl GearSim {
         ];
         g.pos = g.arrive_from;
         g.motion = Motion::Arriving { t: 0.0 };
+        g.fade = 0.0;
     }
 
     fn update_motion(&mut self, dt: f32) {
@@ -843,14 +1004,15 @@ impl GearSim {
                         *slot = None;
                         continue;
                     }
-                    // A quick slide out of mesh, then a slow sink beneath the others.
+                    // A quick slide out of mesh, then lifted up and away, never through
+                    // the gears below.
                     let slide = (t / 0.15).min(1.0);
-                    let sink = ((t - 0.15) / 0.85).max(0.0);
-                    let sink = sink * sink * (3.0 - 2.0 * sink);
+                    let lift = ((t - 0.15) / 0.85).max(0.0);
+                    let lift = lift * lift * (3.0 - 2.0 * lift);
                     let home = [g.home[0], g.home[1], LAYER_Z[g.layer]];
                     let out = lerp3(home, g.leave_from, slide);
-                    g.pos = lerp3(out, g.leave_to, sink);
-                    g.fade = 1.0 - 0.75 * sink;
+                    g.pos = lerp3(out, g.leave_to, lift);
+                    g.fade = 1.0 - smoothstep01((t - LEAVE_FADE_FROM) / (1.0 - LEAVE_FADE_FROM));
                     g.motion = Motion::Leaving { t };
                 }
                 Motion::Arriving { t } => {
@@ -858,18 +1020,21 @@ impl GearSim {
                     let home = [g.home[0], g.home[1], LAYER_Z[g.layer]];
                     if t >= 1.0 {
                         g.pos = home;
+                        g.fade = 1.0;
                         g.motion = Motion::Engaged;
                         continue;
                     }
-                    // Descend over the first 70%, then bounce once or twice: clunk.
-                    let fall = (t / 0.7).min(1.0);
-                    let ease = 1.0 - (1.0 - fall).powi(3);
+                    // Fade in while hovering high above, fall, then bounce once or twice:
+                    // clunk.
+                    g.fade = smoothstep01(t / ARRIVE_HOVER);
+                    let fall = ((t - ARRIVE_HOVER) / (ARRIVE_LAND - ARRIVE_HOVER)).clamp(0.0, 1.0);
+                    let ease = fall * fall * fall;
                     g.pos = lerp3(g.arrive_from, home, ease);
-                    if t > 0.7 {
-                        let tau = (t - 0.7) * ARRIVE_TIME;
+                    if t > ARRIVE_LAND {
+                        let tau = (t - ARRIVE_LAND) * ARRIVE_TIME;
                         g.pos[2] -= 0.05 * (-7.0 * tau).exp() * (16.0 * tau).sin().abs();
                     }
-                    if t > 0.7 && t - dt / ARRIVE_TIME <= 0.7 {
+                    if t > ARRIVE_LAND && t - dt / ARRIVE_TIME <= ARRIVE_LAND {
                         landed.push(i);
                     }
                     g.motion = Motion::Arriving { t };
@@ -896,13 +1061,207 @@ impl GearSim {
             }
             _ => [g.home[0], g.home[1], LAYER_Z[g.layer] - 0.02],
         };
-        self.burst(at, 18, 1.4);
+        self.burst(at, 70, 1.6);
+        self.puff([at[0], at[1], LINK_Z - 0.1], [0.0, 0.1, 0.0], 0.6);
     }
 
     /// Reversing the train makes the teeth grind: sparks fly at a few meshes in view.
     fn grind_sparks(&mut self) {
-        let meshes: Vec<[f32; 3]> = self
-            .gears()
+        let meshes = self.mesh_points();
+        for _ in 0..meshes.len().min(8) {
+            let at = meshes[self.rng.pick(meshes.len())];
+            self.burst(at, 30, 1.3);
+        }
+        // And the safety valves blow.
+        for _ in 0..4 {
+            let x = self.rng.uniform(-1.4, 1.4);
+            let y = self.rng.uniform(-0.8, 0.8);
+            let up = self.rng.uniform(0.15, 0.35);
+            self.puff([x, y, LINK_Z - 0.15], [0.0, up, 0.0], 1.4);
+        }
+    }
+
+    // ------------------------------------------------------------ linkages
+
+    /// Fits a few linkages onto big gears in the top layer, in view.
+    fn add_linkages(&mut self) {
+        let top = LAYERS - 1;
+        let kinds = [
+            LinkageKind::WalkingBeam,
+            LinkageKind::SliderCrank,
+            LinkageKind::ScotchYoke,
+            LinkageKind::WalkingBeam,
+        ];
+        let mut footprints: Vec<([f32; 2], f32)> = Vec::new();
+        for kind in kinds {
+            for _ in 0..200 {
+                let candidates: Vec<usize> = self
+                    .gears()
+                    .filter(|(_, g)| {
+                        g.layer == top
+                            && g.engaged()
+                            && g.kind != GearKind::Balance
+                            && (0.16..0.5).contains(&g.radius)
+                            && g.home[0].abs() < 1.5
+                            && g.home[1].abs() < 0.85
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                if candidates.is_empty() {
+                    return;
+                }
+                let driver = candidates[self.rng.pick(candidates.len())];
+                if self.linkages.iter().any(|l| l.driver == driver) {
+                    continue;
+                }
+                let Some(linkage) = self.design_linkage(kind, driver) else {
+                    continue;
+                };
+                let (centre, reach) = footprint(&linkage, &self.gears[driver].unwrap());
+                let clear = footprints
+                    .iter()
+                    .all(|(c, r)| dist2(*c, centre).sqrt() > (r + reach) * 0.55);
+                let gear = self.gears[driver].unwrap();
+                let end = linkage.cylinder_end();
+                let pivot_ok = linkage.kind != LinkageKind::WalkingBeam
+                    || (linkage.pivot[0].abs() < 1.8 && linkage.pivot[1].abs() < 1.0);
+                let on_screen = end[0].abs() < 1.8
+                    && end[1].abs() < 1.0
+                    && gear.home[0].abs() < 1.6
+                    && gear.home[1].abs() < 0.9
+                    && pivot_ok;
+                if clear && on_screen {
+                    footprints.push((centre, reach));
+                    self.linkages.push(linkage);
+                    break;
+                }
+            }
+        }
+    }
+
+    fn design_linkage(&mut self, kind: LinkageKind, driver: usize) -> Option<Linkage> {
+        let g = self.gears[driver]?;
+        let rng = &mut self.rng;
+        let heading = rng.uniform(0.0, TAU);
+        let axis = [heading.cos(), heading.sin()];
+        let side = if rng.next_f32() < 0.5 { 1.0 } else { -1.0 };
+        let perp = [-axis[1] * side, axis[0] * side];
+        let crank = g.radius * rng.uniform(0.45, 0.6);
+        let mut l = Linkage {
+            kind,
+            driver,
+            crank,
+            phase: rng.uniform(0.0, TAU),
+            axis,
+            pivot: [0.0; 2],
+            beam_half: 0.0,
+            rod: 0.0,
+            drive_rod: 0.0,
+            slider_origin: [0.0; 2],
+            crank_pin: [0.0; 2],
+            beam_ends: [[0.0; 2]; 2],
+            piston: [0.0; 2],
+            travel: 0.0,
+            moving: 0.0,
+            material: MATERIALS[rng.pick(MATERIALS.len())],
+            seed: rng.next_f32(),
+        };
+        let at =
+            |base: [f32; 2], dir: [f32; 2], d: f32| [base[0] + dir[0] * d, base[1] + dir[1] * d];
+        match kind {
+            LinkageKind::WalkingBeam => {
+                // Pivot beyond the gear; at rest the beam lies across the axis.
+                l.pivot = at(g.home, axis, g.radius + rng.uniform(0.3, 0.5));
+                l.beam_half = rng.uniform(0.26, 0.4);
+                let near_end = at(l.pivot, perp, l.beam_half);
+                l.drive_rod = dist2(near_end, g.home).sqrt();
+                let far_end = at(l.pivot, perp, -l.beam_half);
+                l.rod = rng.uniform(0.2, 0.3);
+                l.slider_origin = at(far_end, axis, l.rod);
+                l.beam_ends = [near_end, far_end];
+            }
+            LinkageKind::SliderCrank => {
+                l.rod = g.radius + crank + rng.uniform(0.15, 0.3);
+                l.slider_origin = g.home;
+            }
+            LinkageKind::ScotchYoke => {
+                l.rod = g.radius + rng.uniform(0.25, 0.4);
+                l.slider_origin = g.home;
+            }
+        }
+        // The mechanism must work all the way round.
+        for k in 0..64 {
+            let angle = k as f32 / 64.0 * TAU;
+            if !l.solve(&g, angle) {
+                return None;
+            }
+        }
+        l.solve(&g, g.angle);
+        Some(l)
+    }
+
+    /// Moves every linkage to follow its crank, rebuilds the bars, and lets cylinders chuff
+    /// steam at the end of each stroke.
+    fn update_linkages(&mut self) {
+        self.bars.clear();
+        let mut chuffs = Vec::new();
+        for l in &mut self.linkages {
+            let Some(g) = self.gears[l.driver] else {
+                continue;
+            };
+            let before = l.travel;
+            l.solve(&g, g.angle);
+            let moving = (l.travel - before).signum();
+            if moving != 0.0 && l.moving != 0.0 && moving != l.moving {
+                chuffs.push((l.cylinder_end(), l.axis));
+            }
+            if moving != 0.0 {
+                l.moving = moving;
+            }
+            l.push_bars(&mut self.bars);
+        }
+        for (at, dir) in chuffs {
+            let up = self.rng.uniform(0.05, 0.15);
+            self.puff(
+                [at[0], at[1], LINK_Z - 0.05],
+                [dir[0] * 0.25, dir[1] * 0.25 + up, 0.0],
+                0.5,
+            );
+        }
+    }
+
+    /// Sparks on every beat at meshes in view, a steady grind with the treble, and embers.
+    fn spray(&mut self, dt: f32, treble: f32, beat: Option<f32>) {
+        let beat_sparks = beat.map_or(0, |s| 1 + (s * 2.0) as usize);
+        self.grind_debt += dt * 30.0 * treble;
+        let grinds = self.grind_debt as usize;
+        self.grind_debt -= grinds as f32;
+        if beat_sparks == 0 && grinds == 0 {
+            return;
+        }
+        let meshes = self.mesh_points();
+        if meshes.is_empty() {
+            return;
+        }
+        let strength = beat.unwrap_or(0.0);
+        for _ in 0..beat_sparks {
+            let at = meshes[self.rng.pick(meshes.len())];
+            self.burst(at, 10 + (strength * 14.0) as usize, 1.1);
+        }
+        for _ in 0..grinds {
+            let at = meshes[self.rng.pick(meshes.len())];
+            self.burst(at, 2, 0.7);
+        }
+        if beat.is_some() && self.rng.next_f32() < 0.3 && !self.linkages.is_empty() {
+            let l = self.linkages[self.rng.pick(self.linkages.len())];
+            let at = l.cylinder_end();
+            self.puff([at[0], at[1], LINK_Z - 0.05], [0.0, 0.15, 0.0], 0.7);
+        }
+    }
+
+    /// Where engaged, visible gears meet their drivers.
+    fn mesh_points(&self) -> Vec<[f32; 3]> {
+        self.gears()
             .filter(|(_, g)| g.engaged() && !g.on_axle && self.visible(g))
             .filter_map(|(_, g)| {
                 let p = self.gear(g.driver?)?;
@@ -914,10 +1273,52 @@ impl GearSim {
                     LAYER_Z[g.layer] - 0.02,
                 ])
             })
-            .collect();
-        for _ in 0..meshes.len().min(4) {
-            let at = meshes[self.rng.pick(meshes.len())];
-            self.burst(at, 8, 1.0);
+            .collect()
+    }
+
+    /// A plume of smoke: five billows of one colour, jostled apart.
+    fn puff(&mut self, at: [f32; 3], vel: [f32; 3], size: f32) {
+        let tint = SMOKE_TINTS[self.rng.pick(SMOKE_TINTS.len())];
+        for _ in 0..5 {
+            self.billow(at, vel, size, tint);
+        }
+    }
+
+    fn billow(&mut self, at: [f32; 3], vel: [f32; 3], size: f32, tint: [f32; 3]) {
+        if self.puffs.len() >= MAX_PUFFS {
+            self.puffs.remove(0);
+        }
+        let rng = &mut self.rng;
+        let spread = 0.08 * size;
+        self.puffs.push(Puff {
+            pos: [
+                at[0] + rng.uniform(-spread, spread),
+                at[1] + rng.uniform(-spread, spread),
+                at[2] + rng.uniform(-0.03, 0.03),
+            ],
+            vel: [
+                vel[0] + rng.uniform(-0.07, 0.07),
+                vel[1] + rng.uniform(-0.02, 0.07),
+                vel[2],
+            ],
+            age: 0.0,
+            life: rng.uniform(2.5, 4.5) * (0.7 + 0.3 * size),
+            size: 0.12 * size * rng.uniform(0.7, 1.3),
+            seed: rng.next_f32(),
+            tint,
+        });
+    }
+
+    /// Chimney vents smoke steadily, harder when the music is loud.
+    fn vent(&mut self, dt: f32, energy: f32) {
+        self.vent_debt += dt * VENT_RATE * (0.5 + energy);
+        while self.vent_debt >= 1.0 {
+            self.vent_debt -= 1.0;
+            let Some(&(at, tint)) = self.vents.get(self.rng.pick(self.vents.len().max(1))) else {
+                return;
+            };
+            let up = self.rng.uniform(0.12, 0.25);
+            self.billow([at[0], at[1], LINK_Z - 0.12], [0.0, up, 0.0], 0.8, tint);
         }
     }
 
@@ -939,8 +1340,9 @@ impl GearSim {
                     -rng.uniform(0.0, 0.6),
                 ],
                 age: 0.0,
-                life: rng.uniform(0.4, 1.1),
+                life: rng.uniform(0.5, 1.6),
                 spark: true,
+                ember: rng.next_f32() < 0.15,
             });
         }
     }
@@ -959,19 +1361,37 @@ impl GearSim {
             age: 0.0,
             life: rng.uniform(8.0, 20.0),
             spark: false,
+            ember: false,
         }
     }
 
     fn update_particles(&mut self, dt: f32, treble: f32) {
         for s in &mut self.sparks {
             s.age += dt;
-            s.vel[1] -= 3.5 * dt; // gravity
+            if s.ember {
+                // Embers are carried up on the hot air.
+                s.vel[1] += (0.25 - s.vel[1]) * (dt * 1.5).min(1.0);
+                s.vel[0] += 0.3 * (s.age * 5.0 + s.life * 20.0).sin() * dt;
+            } else {
+                s.vel[1] -= 3.5 * dt; // gravity
+            }
             s.vel = s.vel.map(|v| v * (-0.6 * dt).exp());
             for k in 0..3 {
                 s.pos[k] += s.vel[k] * dt;
             }
         }
-        self.sparks.retain(|s| s.age < s.life);
+        self.sparks
+            .retain(|s| s.age < s.life * if s.ember { 2.5 } else { 1.0 });
+        for p in &mut self.puffs {
+            p.age += dt;
+            p.vel = p.vel.map(|v| v * (-1.2 * dt).exp());
+            p.vel[1] += 0.06 * dt;
+            p.size += dt * 0.12;
+            for k in 0..3 {
+                p.pos[k] += p.vel[k] * dt;
+            }
+        }
+        self.puffs.retain(|p| p.age < p.life);
         let t = self.time;
         for i in 0..self.motes.len() {
             let m = &mut self.motes[i];
@@ -990,31 +1410,69 @@ impl GearSim {
     fn move_lights(&mut self, energy: f32) {
         let t = self.time;
         let pulse = self.beat_pulse;
-        self.lights = [
+        let lamp = |pos: [f32; 3], color: [f32; 3]| Light {
+            pos,
+            color,
+            dir: [0.0, 0.0, 1.0],
+            cone: None,
+        };
+        // Spotlights mounted high at the sides, sweeping their pools across the works.
+        let sweep = t * (1.0 + energy);
+        let spot = |pos: [f32; 3], target: [f32; 3], color: [f32; 3], half_angle: f32| {
+            let d = [target[0] - pos[0], target[1] - pos[1], target[2] - pos[2]];
+            let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
             Light {
-                pos: [
+                pos,
+                color,
+                dir: d.map(|v| v / len),
+                cone: Some(half_angle.cos()),
+            }
+        };
+        self.lights = [
+            lamp(
+                [
                     1.6 * (t * 0.11).sin(),
                     0.9 * (t * 0.17 + 1.0).sin(),
                     2.2 + 0.4 * (t * 0.07).sin(),
                 ],
-                color: [1.0, 0.72, 0.42].map(|c| c * (2.2 + 1.5 * pulse)),
-            },
-            Light {
-                pos: [
+                [1.0, 0.72, 0.42].map(|c| c * (2.2 + 1.5 * pulse)),
+            ),
+            lamp(
+                [
                     1.8 * (t * 0.083 + 2.0).cos(),
                     1.0 * (t * 0.13).cos(),
                     1.8 + 0.5 * (t * 0.05 + 1.0).sin(),
                 ],
-                color: [0.5, 0.7, 1.0].map(|c| c * (1.4 + energy)),
-            },
-            Light {
-                pos: [
+                [0.5, 0.7, 1.0].map(|c| c * (1.4 + energy)),
+            ),
+            lamp(
+                [
                     1.2 * (t * 0.19 + 4.0).sin(),
                     0.7 * (t * 0.23 + 2.0).cos(),
                     2.6,
                 ],
-                color: [1.0, 0.97, 0.92].map(|c| c * (0.9 + 1.2 * pulse)),
-            },
+                [1.0, 0.97, 0.92].map(|c| c * (0.9 + 1.2 * pulse)),
+            ),
+            spot(
+                [-2.8, 1.5 + 0.3 * (t * 0.2).sin(), 0.7],
+                [
+                    1.4 * (sweep * 0.37).sin(),
+                    0.8 * (sweep * 0.61 + 1.0).sin(),
+                    LAYER_Z[1],
+                ],
+                [0.85, 0.92, 1.0].map(|c| c * (5.0 + 3.0 * pulse)),
+                0.17,
+            ),
+            spot(
+                [2.8, -1.4 + 0.3 * (t * 0.17).cos(), 0.9],
+                [
+                    1.4 * (sweep * 0.29 + 2.5).cos(),
+                    0.8 * (sweep * 0.47 + 0.4).cos(),
+                    LAYER_Z[1],
+                ],
+                [1.0, 0.78, 0.45].map(|c| c * (4.5 + 3.0 * pulse)),
+                0.2,
+            ),
         ];
     }
 }
@@ -1029,4 +1487,236 @@ fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
         a[1] + (b[1] - a[1]) * t,
         a[2] + (b[2] - a[2]) * t,
     ]
+}
+
+impl Linkage {
+    /// Positions every joint for crank angle `gear_angle`. Returns false if the parts can't
+    /// reach each other there.
+    fn solve(&mut self, gear: &Gear, gear_angle: f32) -> bool {
+        let a = gear_angle + self.phase;
+        self.crank_pin = [
+            gear.home[0] + a.cos() * self.crank,
+            gear.home[1] + a.sin() * self.crank,
+        ];
+        match self.kind {
+            LinkageKind::WalkingBeam => {
+                let Some((e1, e2)) =
+                    circles_meet(self.pivot, self.beam_half, self.crank_pin, self.drive_rod)
+                else {
+                    return false;
+                };
+                // Stay on the same branch as last time so the beam never flips over.
+                let prev = self.beam_ends[0];
+                let near = if dist2(e1, prev) <= dist2(e2, prev) {
+                    e1
+                } else {
+                    e2
+                };
+                let far = [2.0 * self.pivot[0] - near[0], 2.0 * self.pivot[1] - near[1]];
+                self.beam_ends = [near, far];
+                match slide(self.slider_origin, self.axis, far, self.rod) {
+                    Some(s) => self.set_piston(s),
+                    None => return false,
+                }
+            }
+            LinkageKind::SliderCrank => match slide(gear.home, self.axis, self.crank_pin, self.rod)
+            {
+                Some(s) => self.set_piston(s),
+                None => return false,
+            },
+            LinkageKind::ScotchYoke => {
+                let rel = [
+                    self.crank_pin[0] - gear.home[0],
+                    self.crank_pin[1] - gear.home[1],
+                ];
+                let s = rel[0] * self.axis[0] + rel[1] * self.axis[1];
+                self.set_piston(s + self.rod);
+            }
+        }
+        true
+    }
+
+    fn set_piston(&mut self, s: f32) {
+        self.travel = s;
+        self.piston = [
+            self.slider_origin[0] + self.axis[0] * s,
+            self.slider_origin[1] + self.axis[1] * s,
+        ];
+    }
+
+    fn along(&self, s: f32) -> [f32; 2] {
+        [
+            self.slider_origin[0] + self.axis[0] * s,
+            self.slider_origin[1] + self.axis[1] * s,
+        ]
+    }
+
+    /// The closed end of the cylinder, where steam escapes.
+    fn cylinder_end(&self) -> [f32; 2] {
+        let reach = match self.kind {
+            LinkageKind::WalkingBeam => self.beam_half * 0.5 + 0.2,
+            _ => self.crank + 0.25,
+        };
+        self.along(self.rod + reach)
+    }
+
+    fn push_bars(&self, bars: &mut Vec<Bar>) {
+        let bar = |a, b, z, width, style, material| Bar {
+            a,
+            b,
+            z,
+            width,
+            style,
+            material,
+            seed: self.seed,
+        };
+        let steel = Material::BrushedSteel;
+        let stroke = match self.kind {
+            LinkageKind::WalkingBeam => self.beam_half * 0.5,
+            _ => self.crank,
+        };
+        // Cylinder (or guide) deepest, then piston rod and crosshead, rods, beam, bosses.
+        let cylinder_from = self.along(self.rod + stroke * 0.3);
+        bars.push(bar(
+            cylinder_from,
+            self.cylinder_end(),
+            LINK_Z + 0.04,
+            0.085,
+            BarStyle::Cylinder,
+            self.material,
+        ));
+        bars.push(bar(
+            self.piston,
+            cylinder_from,
+            LINK_Z + 0.03,
+            0.018,
+            BarStyle::Rod,
+            steel,
+        ));
+        let head = [self.axis[0] * 0.035, self.axis[1] * 0.035];
+        let p = self.piston;
+        bars.push(bar(
+            [p[0] - head[0], p[1] - head[1]],
+            [p[0] + head[0], p[1] + head[1]],
+            LINK_Z + 0.02,
+            0.05,
+            BarStyle::Block,
+            steel,
+        ));
+        match self.kind {
+            LinkageKind::WalkingBeam => {
+                let [near, far] = self.beam_ends;
+                bars.push(bar(
+                    self.crank_pin,
+                    near,
+                    LINK_Z,
+                    0.026,
+                    BarStyle::Rod,
+                    steel,
+                ));
+                bars.push(bar(
+                    far,
+                    self.piston,
+                    LINK_Z + 0.01,
+                    0.022,
+                    BarStyle::Rod,
+                    steel,
+                ));
+                bars.push(bar(
+                    near,
+                    far,
+                    LINK_Z - 0.03,
+                    0.055,
+                    BarStyle::Truss,
+                    self.material,
+                ));
+                bars.push(bar(
+                    self.pivot,
+                    self.pivot,
+                    LINK_Z - 0.05,
+                    0.05,
+                    BarStyle::Boss,
+                    Material::Gunmetal,
+                ));
+            }
+            LinkageKind::SliderCrank => {
+                bars.push(bar(
+                    self.crank_pin,
+                    self.piston,
+                    LINK_Z,
+                    0.028,
+                    BarStyle::Rod,
+                    steel,
+                ));
+            }
+            LinkageKind::ScotchYoke => {
+                let across = [-self.axis[1], self.axis[0]];
+                let reach = self.crank * 1.25;
+                let centre = self.along(self.travel - self.rod);
+                bars.push(bar(
+                    [centre[0] - across[0] * reach, centre[1] - across[1] * reach],
+                    [centre[0] + across[0] * reach, centre[1] + across[1] * reach],
+                    LINK_Z,
+                    0.05,
+                    BarStyle::Yoke,
+                    self.material,
+                ));
+                bars.push(bar(
+                    centre,
+                    self.piston,
+                    LINK_Z + 0.01,
+                    0.022,
+                    BarStyle::Rod,
+                    steel,
+                ));
+            }
+        }
+        bars.push(bar(
+            self.crank_pin,
+            self.crank_pin,
+            LINK_Z - 0.06,
+            0.03,
+            BarStyle::Boss,
+            Material::Gunmetal,
+        ));
+    }
+}
+
+/// Where the circle about `c0` of radius `r0` meets the one about `c1` of radius `r1`.
+fn circles_meet(c0: [f32; 2], r0: f32, c1: [f32; 2], r1: f32) -> Option<([f32; 2], [f32; 2])> {
+    let d = dist2(c0, c1).sqrt();
+    if d < 1e-5 || d > r0 + r1 || d < (r0 - r1).abs() {
+        return None;
+    }
+    let a = (r0 * r0 - r1 * r1 + d * d) / (2.0 * d);
+    let h = (r0 * r0 - a * a).max(0.0).sqrt();
+    let u = [(c1[0] - c0[0]) / d, (c1[1] - c0[1]) / d];
+    let m = [c0[0] + u[0] * a, c0[1] + u[1] * a];
+    Some((
+        [m[0] - u[1] * h, m[1] + u[0] * h],
+        [m[0] + u[1] * h, m[1] - u[0] * h],
+    ))
+}
+
+/// How far along `dir` from `origin` a point must be to sit `len` from `p` (the far root).
+fn slide(origin: [f32; 2], dir: [f32; 2], p: [f32; 2], len: f32) -> Option<f32> {
+    let w = [origin[0] - p[0], origin[1] - p[1]];
+    let b = w[0] * dir[0] + w[1] * dir[1];
+    let disc = b * b - (w[0] * w[0] + w[1] * w[1]) + len * len;
+    (disc >= 0.0).then(|| -b + disc.sqrt())
+}
+
+/// A circle that roughly covers a linkage, for keeping linkages apart.
+fn footprint(l: &Linkage, gear: &Gear) -> ([f32; 2], f32) {
+    let end = l.cylinder_end();
+    let centre = [(gear.home[0] + end[0]) * 0.5, (gear.home[1] + end[1]) * 0.5];
+    (
+        centre,
+        dist2(gear.home, end).sqrt() * 0.5 + gear.radius * 0.3 + l.beam_half * 0.5,
+    )
+}
+
+fn smoothstep01(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }

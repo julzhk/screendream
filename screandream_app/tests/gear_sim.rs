@@ -1,5 +1,5 @@
 use screendream::render::gear_sim::{
-    Drive, FOCAL, GearKind, GearSim, LAYER_Z, LAYERS, MAX_SPARKS, Motion,
+    BarStyle, Drive, FOCAL, GearKind, GearSim, LAYER_Z, LAYERS, LinkageKind, MAX_SPARKS, Motion,
 };
 use std::f32::consts::TAU;
 
@@ -185,7 +185,6 @@ fn gears_are_swapped_out_and_replaced() {
     let mut sim = GearSim::new(6);
     let start_count = sim.count();
     let (mut saw_leaving, mut saw_arriving, mut saw_sparks) = (false, false, false);
-    let mut deepest_leaving = 0.0f32;
     for frame in 0..60 * 40 {
         sim.step(
             DT,
@@ -197,12 +196,31 @@ fn gears_are_swapped_out_and_replaced() {
         );
         for (_, g) in sim.gears() {
             match g.motion {
-                Motion::Leaving { .. } => {
+                Motion::Leaving { t } => {
                     saw_leaving = true;
-                    deepest_leaving = deepest_leaving.max(g.pos[2]);
+                    // Solid as it lifts off, faded away by the end of its path.
+                    if t < 0.6 {
+                        assert_eq!(g.fade, 1.0);
+                    }
+                    if t > 0.97 {
+                        assert!(g.fade < 0.05, "still {} opaque at t = {t}", g.fade);
+                    }
+                    assert_eq!(g.layer, LAYERS - 1, "only the top layer swaps");
+                    assert!(
+                        g.pos[2] <= LAYER_Z[g.layer] + 1e-3,
+                        "leaving gears never sink through the ones below"
+                    );
                 }
-                Motion::Arriving { .. } => {
+                Motion::Arriving { t } => {
                     saw_arriving = true;
+                    // Fades in up high before it starts to fall.
+                    if t < 0.03 {
+                        assert!(g.fade < 0.1, "arrived already {} opaque", g.fade);
+                    }
+                    if t < 0.2 {
+                        assert!(g.pos[2] < LAYER_Z[0] - 1.5, "falling before it faded in");
+                    }
+                    assert_eq!(g.layer, LAYERS - 1, "only the top layer swaps");
                     assert!(
                         g.pos[2] <= LAYER_Z[g.layer] + 1e-3,
                         "arrivals come from above"
@@ -214,12 +232,8 @@ fn gears_are_swapped_out_and_replaced() {
         saw_sparks |= !sim.sparks().is_empty();
         assert!(sim.sparks().len() <= MAX_SPARKS);
     }
-    assert!(sim.swaps() >= 4, "only {} swaps", sim.swaps());
+    assert!(sim.swaps() >= 40, "only {} swaps", sim.swaps());
     assert!(saw_leaving && saw_arriving && saw_sparks);
-    assert!(
-        deepest_leaving > LAYER_Z[0],
-        "leaving gears sink under the mechanism"
-    );
     let end = sim.count();
     assert!(
         end as f32 > start_count as f32 * 0.9,
@@ -227,4 +241,149 @@ fn gears_are_swapped_out_and_replaced() {
     );
     // Swaps and top-ups never break the meshing.
     assert_meshes(&sim);
+}
+
+fn length(a: [f32; 2], b: [f32; 2]) -> f32 {
+    dist(a, b)
+}
+
+#[test]
+fn linkages_hold_together_as_they_move() {
+    for seed in 1..=6 {
+        let mut sim = GearSim::new(seed);
+        assert!(
+            sim.linkages().len() >= 2,
+            "seed {seed}: {} linkages",
+            sim.linkages().len()
+        );
+        let mut kinds = Vec::new();
+        for frame in 0..60 * 8 {
+            sim.step(
+                DT,
+                Drive {
+                    bass: bass_at(frame, 25),
+                    energy: 0.8,
+                    treble: 0.3,
+                },
+            );
+            for l in sim.linkages() {
+                let gear = sim
+                    .gear(l.driver)
+                    .expect("a linkage's gear is never swapped out");
+                assert!(gear.engaged());
+                // The crank pin rides on the gear's face.
+                assert!((length(l.crank_pin, gear.home) - l.crank).abs() < 1e-3);
+                match l.kind {
+                    LinkageKind::WalkingBeam => {
+                        let [near, far] = l.beam_ends;
+                        assert!((length(near, l.pivot) - l.beam_half).abs() < 1e-3);
+                        assert!((length(far, l.pivot) - l.beam_half).abs() < 1e-3);
+                        assert!((length(l.crank_pin, near) - l.drive_rod).abs() < 1e-3);
+                        assert!((length(far, l.piston) - l.rod).abs() < 1e-3);
+                    }
+                    LinkageKind::SliderCrank => {
+                        assert!((length(l.crank_pin, l.piston) - l.rod).abs() < 1e-3);
+                    }
+                    LinkageKind::ScotchYoke => {}
+                }
+                kinds.push(l.kind);
+            }
+        }
+        assert!(sim.bars().iter().any(|b| b.style == BarStyle::Cylinder));
+        if seed == 1 {
+            assert!(kinds.contains(&LinkageKind::WalkingBeam));
+        }
+    }
+}
+
+#[test]
+fn steam_chuffs_and_sparks_fly() {
+    let mut sim = GearSim::new(8);
+    let (mut most_sparks, mut most_puffs, mut embers) = (0, 0, false);
+    for frame in 0..60 * 20 {
+        sim.step(
+            DT,
+            Drive {
+                bass: bass_at(frame, 28),
+                energy: 0.8,
+                treble: 0.6,
+            },
+        );
+        most_sparks = most_sparks.max(sim.sparks().len());
+        most_puffs = most_puffs.max(sim.puffs().len());
+        embers |= sim.sparks().iter().any(|s| s.ember);
+    }
+    assert!(most_sparks > 300, "only {most_sparks} sparks at once");
+    assert!(most_puffs > 150, "only {most_puffs} puffs of smoke");
+    let mut tints: Vec<[u32; 3]> = sim
+        .puffs()
+        .iter()
+        .map(|p| p.tint.map(|c| (c * 100.0) as u32))
+        .collect();
+    tints.sort();
+    tints.dedup();
+    assert!(
+        tints.len() >= 3,
+        "smoke comes in only {} colours",
+        tints.len()
+    );
+    assert!(embers);
+    assert!(sim.motes().len() >= 300);
+}
+
+#[test]
+fn reversals_are_frequent_and_change_the_speed() {
+    let mut sim = GearSim::new(12);
+    let mut speeds = Vec::new();
+    for frame in 0..60 * 30 {
+        sim.step(
+            DT,
+            Drive {
+                bass: bass_at(frame, 30),
+                energy: 0.5,
+                treble: 0.0,
+            },
+        );
+        let s = (sim.speed_scale() * 100.0) as u32;
+        if speeds.last() != Some(&s) {
+            speeds.push(s);
+        }
+    }
+    // A beat every half second for 30 s: a reversal every bar or two.
+    assert!(sim.reversals() >= 8, "only {} reversals", sim.reversals());
+    assert!(speeds.len() >= 5, "speeds {speeds:?}");
+}
+
+#[test]
+fn spotlights_strafe_the_mechanism() {
+    let mut sim = GearSim::new(13);
+    let spots: Vec<usize> = (0..sim.lights().len())
+        .filter(|&i| sim.lights()[i].cone.is_some())
+        .collect();
+    assert!(spots.len() >= 2);
+    let aim = |sim: &GearSim, i: usize| {
+        let l = sim.lights()[i];
+        // Where the beam lands on the mechanism.
+        let t = (LAYER_Z[1] - l.pos[2]) / l.dir[2];
+        [l.pos[0] + l.dir[0] * t, l.pos[1] + l.dir[1] * t]
+    };
+    let start: Vec<_> = spots.iter().map(|&i| aim(&sim, i)).collect();
+    for _ in 0..60 * 3 {
+        sim.step(
+            DT,
+            Drive {
+                bass: 0.2,
+                energy: 0.6,
+                treble: 0.0,
+            },
+        );
+    }
+    for (k, &i) in spots.iter().enumerate() {
+        let now = aim(&sim, i);
+        assert!(dist(now, start[k]) > 0.3, "spotlight {i} barely moved");
+        assert!(
+            now[0].abs() < 2.0 && now[1].abs() < 1.2,
+            "spotlight {i} aimed off the works"
+        );
+    }
 }

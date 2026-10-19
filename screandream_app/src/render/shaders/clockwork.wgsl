@@ -3,21 +3,29 @@
 //   vs_jewel/fs_jewel     a ruby bearing on the plate under every axle
 //   vs_shadow/fs_shadow   each gear's soft shadow on the layer beneath it (multiply)
 //   vs_gear/fs_gear       procedural gears: teeth, spokes, bevels, screws, rivets, brushing,
-//                         scratches, oil, lit by three point lights and a studio environment
-//   vs_spark/fs_spark     sparks and dust motes (additive)
+//                         scratches, oil, lit by lamps, spotlights and a studio environment;
+//                         gears fading in or out use the same shader with alpha blending
+//   vs_bar/fs_bar         linkage parts: rods, riveted crossbeams, ribbed cylinders, blocks,
+//                         bosses and yokes; vs_bar_shadow/fs_bar_shadow cast them (multiply)
+//   vs_puff/fs_puff       billows of steam (alpha)
+//   vs_screen/fs_steam    drifting steam over the whole mechanism (alpha)
+//   vs_spark/fs_spark     sparks, embers and dust motes (additive)
 //   vs_screen/fs_glow     lamp glows, anamorphic streaks and lit haze (additive)
 //   vs_screen/fs_vignette (multiply)
 // World: the camera sits at z = 0 looking towards +z; gears lie in planes of constant z.
 // Every quad is parallel to the screen, so it is projected with w = 1 and depth is linear in z.
 struct Works {
   cam: vec4f,                    // x, y, roll, focal length
-  light_pos: array<vec4f, 3>,    // xyz
-  light_col: array<vec4f, 3>,    // rgb
-  misc: vec4f,                   // beat pulse, plate z, -, -
+  light_pos: array<vec4f, 5>,    // xyz, spotlight cone cosine (below -1 for lamps)
+  light_col: array<vec4f, 5>,    // rgb
+  light_dir: array<vec4f, 5>,    // spotlight direction
+  misc: vec4f,                   // beat pulse, plate z, top layer z, -
 };
 
 @group(1) @binding(0) var<uniform> w: Works;
 
+const LIGHTS: i32 = 5;
+const POINT_LAMPS: i32 = 3; // the rest are spotlights
 const NEAR: f32 = 0.5;
 const FAR: f32 = 10.0;
 
@@ -91,7 +99,20 @@ fn environment(r: vec3f, rough: f32) -> vec3f {
     * (1.0 - rough * 0.6);
 }
 
-// Anisotropic (Ward-style) metal under the three lamps. `t` is the brushing direction.
+// Light from lamp `i` arriving at `p`: falls off with distance, and spotlights only light
+// what lies inside their cone.
+fn lamp(i: i32, p: vec3f) -> vec3f {
+  let lv = w.light_pos[i].xyz - p;
+  var c = w.light_col[i].rgb / (1.0 + dot(lv, lv) * 0.08);
+  let cone = w.light_pos[i].w;
+  if (cone > -1.5) {
+    let along = dot(normalize(-lv), w.light_dir[i].xyz);
+    c *= smoothstep(cone - 0.012, cone + 0.006, along);
+  }
+  return c;
+}
+
+// Anisotropic (Ward-style) metal under the lamps and spotlights. `t` is the brushing direction.
 fn shade(p: vec3f, n: vec3f, t: vec3f, m: Metal) -> vec3f {
   let v = normalize(camera() - p);
   let b = normalize(cross(n, t));
@@ -102,10 +123,9 @@ fn shade(p: vec3f, n: vec3f, t: vec3f, m: Metal) -> vec3f {
     across = m.rough * 1.6;
   }
   var col = vec3f(0.0);
-  for (var i = 0; i < 3; i++) {
+  for (var i = 0; i < LIGHTS; i++) {
     let lv = w.light_pos[i].xyz - p;
-    let d2 = dot(lv, lv);
-    let l = lv / sqrt(d2);
+    let l = normalize(lv);
     let h = normalize(l + v);
     let ndl = max(dot(n, l), 0.0);
     let ndh = max(dot(n, h), 1e-3);
@@ -113,8 +133,7 @@ fn shade(p: vec3f, n: vec3f, t: vec3f, m: Metal) -> vec3f {
     let hb = dot(h, b) / across;
     let spec = exp(-(ht * ht + hb * hb) / (ndh * ndh)) / (12.566 * along * across);
     let fresnel = m.f0 + (1.0 - m.f0) * pow(1.0 - max(dot(v, h), 0.0), 5.0);
-    let lamp = w.light_col[i].rgb / (1.0 + d2 * 0.08);
-    col += lamp * ndl * (fresnel * spec * 0.22 + m.f0 * 0.05);
+    col += lamp(i, p) * ndl * (fresnel * spec * 0.22 + m.f0 * 0.05);
   }
   col += m.f0 * environment(reflect(-v, n), m.rough) * 0.7;
   return col;
@@ -358,8 +377,8 @@ fn fs_gear(in: GearOut) -> @location(0) vec4f {
   }
   // Shadowed edges give the silhouette its weight.
   col *= 0.55 + 0.45 * smoothstep(0.0, 0.025, -d);
-  col *= in.d.x;
-  return idle_fade(col);
+  // Opacity: only arriving and departing gears are drawn blended, fading in and out.
+  return vec4f(idle_fade(col).rgb, in.d.x);
 }
 
 // ---------------------------------------------------------------- shadows
@@ -491,11 +510,276 @@ fn fs_jewel(in: GearOut) -> @location(0) vec4f {
   return idle_fade(col);
 }
 
+
+// ---------------------------------------------------------------- linkages
+
+const BAR_ROD: u32 = 0u;
+const BAR_TRUSS: u32 = 1u;
+const BAR_CYLINDER: u32 = 2u;
+const BAR_BLOCK: u32 = 3u;
+const BAR_BOSS: u32 = 4u;
+const BAR_YOKE: u32 = 5u;
+
+struct BarIn {
+  @location(0) a: vec4f, // start, z, width
+  @location(1) b: vec4f, // end, style, material
+  @location(2) c: vec4f, // seed, -, -, -
+};
+
+struct BarOut {
+  @builtin(position) pos: vec4f,
+  @location(0) world: vec2f,
+  @location(1) centre: vec2f,
+  @location(2) dir: vec2f,
+  // half length, width, z, seed
+  @location(3) shape: vec4f,
+  @location(4) @interpolate(flat) style: vec2u, // style, material
+  @location(5) shadow: vec4f, // shadow projection: lamp xy, scale, softness
+};
+
+fn rounded_box(q: vec2f, half: vec2f, r: f32) -> f32 {
+  let d = abs(q) - half + vec2f(r);
+  return length(max(d, vec2f(0.0))) + min(max(d.x, d.y), 0.0) - r;
+}
+
+// Signed distance to a linkage part, in its own frame (x along it, centred).
+fn bar_sdf(q: vec2f, half: f32, width: f32, style: u32) -> f32 {
+  switch (style) {
+    case 0u: { // dog-bone rod with eyes at both ends
+      let eye = smoothstep(half - width * 1.6, half - width * 0.3, abs(q.x));
+      let r = width * (0.5 + 0.5 * eye);
+      return length(q - vec2f(clamp(q.x, -half, half), 0.0)) - r;
+    }
+    case 1u: { // riveted truss with diamond cut-outs
+      var d = rounded_box(q, vec2f(half + width * 0.6, width), width * 0.4);
+      let cell = width * 2.4;
+      let x = q.x - (round(q.x / cell)) * cell;
+      let diamond = abs(x) / (cell * 0.36) + abs(q.y) / (width * 0.58) - 1.0;
+      let inner = step(abs(q.x), half - width * 0.6) * step(width * 1.3, abs(q.x));
+      if (inner > 0.5) { d = max(d, -diamond * width * 0.5); }
+      return d;
+    }
+    case 2u: { return rounded_box(q, vec2f(half, width), width * 0.3); }
+    case 3u: { return rounded_box(q, vec2f(half + width * 0.3, width * 0.75), 0.008); }
+    case 4u: { return length(q) - width; }
+    default: { // slotted yoke
+      let body = rounded_box(q, vec2f(half + width * 0.3, width * 0.6), width * 0.3);
+      let slot = rounded_box(q, vec2f(half - width * 0.2, width * 0.22), width * 0.2);
+      return max(body, -slot);
+    }
+  }
+}
+
+fn dome(q: vec2f, c: vec2f, r: f32) -> f32 {
+  let d = length(q - c) / r;
+  return select(0.0, r * 0.6 * sqrt(1.0 - d * d), d < 1.0);
+}
+
+// Height towards the camera: tubes for rods and cylinders, bevels, ribs, rivets and bolts.
+fn bar_height(q: vec2f, half: f32, width: f32, style: u32) -> f32 {
+  let d = bar_sdf(q, half, width, style);
+  let bev = clamp(width * 0.25, 0.004, 0.012);
+  var h = bev * smoothstep(0.0, bev, -d);
+  switch (style) {
+    case 0u: {
+      // A round rod, with domed pins through its eyes.
+      let r = width * (0.5 + 0.5 * smoothstep(half - width * 1.6, half - width * 0.3, abs(q.x)));
+      h = r * 0.5 * sqrt(max(1.0 - (q.y / r) * (q.y / r), 0.0)) * smoothstep(0.0, 0.003, -d);
+      h += dome(q, vec2f(half, 0.0), width * 0.5) + dome(q, vec2f(-half, 0.0), width * 0.5);
+    }
+    case 1u: {
+      let cell = width * 2.4;
+      let x = q.x - round(q.x / (cell * 0.5)) * cell * 0.5;
+      h += dome(vec2f(x, abs(q.y)), vec2f(0.0, width * 0.8), width * 0.12);
+    }
+    case 2u: {
+      // Ribbed tube with bolted flanges at each end.
+      let tube = width * 0.5 * sqrt(max(1.0 - (q.y / width) * (q.y / width), 0.0));
+      let rib = 0.004 * smoothstep(0.6, 0.9, abs(sin(q.x * 110.0)));
+      let flange = step(half - 0.025, abs(q.x));
+      h = (tube + rib * (1.0 - flange) + flange * 0.008) * smoothstep(0.0, 0.004, -d);
+      let bolt_x = sign(q.x) * (half - 0.0125);
+      h += dome(vec2f(q.x, abs(q.y)), vec2f(bolt_x, width * 0.75), 0.008);
+    }
+    case 3u: {
+      let c = vec2f(half + width * 0.3 - 0.012, width * 0.75 - 0.012);
+      h += dome(abs(q), c, 0.007);
+    }
+    case 4u: {
+      h += dome(q, vec2f(0.0), width * 0.45);
+    }
+    default: {}
+  }
+  return h;
+}
+
+fn bar_local(world: vec2f, centre: vec2f, dir: vec2f) -> vec2f {
+  let rel = world - centre;
+  return vec2f(dot(rel, dir), dot(rel, vec2f(-dir.y, dir.x)));
+}
+
+fn bar_frame(in: BarIn) -> vec4f {
+  let d = in.b.xy - in.a.xy;
+  let len = length(d);
+  var dir = vec2f(1.0, 0.0);
+  if (len > 1e-5) { dir = d / len; }
+  return vec4f(dir, len * 0.5, 0.0);
+}
+
+fn bar_vertex(vi: u32, in: BarIn) -> BarOut {
+  var o: BarOut;
+  let f = bar_frame(in);
+  let dir = f.xy;
+  let half = f.z;
+  let width = in.a.w;
+  let centre = 0.5 * (in.a.xy + in.b.xy);
+  let c = corner(vi);
+  let world = centre + dir * c.x * (half + width * 1.3) + vec2f(-dir.y, dir.x) * c.y * width * 1.3;
+  o.pos = to_clip(vec3f(world, in.a.z));
+  o.world = world;
+  o.centre = centre;
+  o.dir = dir;
+  o.shape = vec4f(half, width, in.a.z, in.c.x);
+  o.style = vec2u(u32(in.b.z), u32(in.b.w));
+  return o;
+}
+
+@vertex
+fn vs_bar(@builtin(vertex_index) vi: u32, in: BarIn) -> BarOut {
+  return bar_vertex(vi, in);
+}
+
+@fragment
+fn fs_bar(in: BarOut) -> @location(0) vec4f {
+  let px = length(fwidth(in.world));
+  let half = in.shape.x;
+  let width = in.shape.y;
+  let style = in.style.x;
+  let q = bar_local(in.world, in.centre, in.dir);
+  let d = bar_sdf(q, half, width, style);
+  if (d > 0.0) { discard; }
+  let e = max(px * 0.75, 0.0006);
+  let h0 = bar_height(q, half, width, style);
+  let hx = bar_height(bar_local(in.world + vec2f(e, 0.0), in.centre, in.dir), half, width, style);
+  let hy = bar_height(bar_local(in.world + vec2f(0.0, e), in.centre, in.dir), half, width, style);
+  let n = normalize(vec3f(-(hx - h0) / e, -(hy - h0) / e, -1.0));
+  var mat = metal(in.style.y);
+  mat.brush = 2u;
+  let grain = noise(vec2f(q.x * 40.0, q.y * 900.0 + in.shape.w * 30.0));
+  mat.rough *= 0.8 + 0.4 * grain;
+  var col = shade(vec3f(in.world, in.shape.z - h0), n, vec3f(in.dir, 0.0), mat) * (0.85 + 0.3 * grain);
+  // Dark bores: the yoke's slot edge and the pin holes catch shadow.
+  col *= 0.55 + 0.45 * smoothstep(0.0, 0.012, -d);
+  if (style == BAR_BOSS || style == BAR_ROD) {
+    let slot_c = select(vec2f(0.0), vec2f(sign(q.x) * half, 0.0), style == BAR_ROD);
+    let slot_r = select(width * 0.45, width * 0.5, style == BAR_ROD);
+    if (length(q - slot_c) < slot_r) {
+      col *= 1.0 - 0.75 * screw_slot(q - slot_c, slot_r, in.shape.w * 9.0);
+    }
+  }
+  return idle_fade(col);
+}
+
+@vertex
+fn vs_bar_shadow(@builtin(vertex_index) vi: u32, in: BarIn) -> BarOut {
+  var o = bar_vertex(vi, in);
+  let lamp = w.light_pos[0].xyz;
+  let receiver = w.misc.z;
+  let s = (receiver - lamp.z) / max(in.a.z - lamp.z, 0.05);
+  let soft = (receiver - in.a.z) * 0.4;
+  let world = lamp.xy + (o.world - lamp.xy) * s + (o.world - o.centre) * soft * 4.0;
+  o.pos = to_clip(vec3f(world, receiver - 0.01));
+  o.shadow = vec4f(lamp.xy, s, soft);
+  o.world = world;
+  return o;
+}
+
+@fragment
+fn fs_bar_shadow(in: BarOut) -> @location(0) vec4f {
+  let lamp = in.shadow.xy;
+  let s = in.shadow.z;
+  let soft = max(in.shadow.w / s, 0.004);
+  let caster = lamp + (in.world - lamp) / s;
+  let q = bar_local(caster, in.centre, in.dir);
+  let d = bar_sdf(q, in.shape.x, in.shape.y, in.style.x);
+  let shadow = smoothstep(soft, -soft, d) * 0.5;
+  return vec4f(vec3f(1.0 - shadow), 1.0);
+}
+
+// ---------------------------------------------------------------- steam
+
+// Steam is lit by the lamps it drifts past.
+fn steam_light(p: vec3f) -> vec3f {
+  var col = vec3f(0.3);
+  for (var i = 0; i < LIGHTS; i++) {
+    let d = w.light_pos[i].xyz - p;
+    var c = lamp(i, p) * 0.25;
+    if (i < POINT_LAMPS) { c = w.light_col[i].rgb * 0.22 / (1.0 + dot(d, d) * 0.6); }
+    col += c;
+  }
+  return col;
+}
+
+struct PuffIn {
+  @location(0) a: vec4f, // position, size
+  @location(1) b: vec4f, // age / life, seed, -, -
+  @location(2) c: vec4f, // smoke colour
+};
+
+struct PuffOut {
+  @builtin(position) pos: vec4f,
+  @location(0) q: vec2f,
+  @location(1) world: vec3f,
+  @location(2) info: vec2f,
+  @location(3) tint: vec3f,
+};
+
+@vertex
+fn vs_puff(@builtin(vertex_index) vi: u32, in: PuffIn) -> PuffOut {
+  var o: PuffOut;
+  let c = corner(vi);
+  o.pos = to_clip(vec3f(in.a.xy + c * in.a.w, in.a.z));
+  o.q = c;
+  o.world = in.a.xyz;
+  o.info = in.b.xy;
+  o.tint = in.c.rgb;
+  return o;
+}
+
+@fragment
+fn fs_puff(in: PuffOut) -> @location(0) vec4f {
+  let life = in.info.x;
+  let billow = fbm(in.q * 2.2 + vec2f(in.info.y * 17.0, life * 1.5));
+  let d = length(in.q) + (billow - 0.5) * 0.7;
+  let density = smoothstep(1.0, 0.25, d);
+  let alpha = min(density * pow(1.0 - life, 1.5) * min(life * 6.0, 1.0) * 0.9, 0.95);
+  let col = in.tint * steam_light(in.world) * (0.9 + 0.3 * billow);
+  return vec4f(col * mix(0.45, 1.0, u.live), alpha);
+}
+
+@fragment
+fn fs_steam(in: ScreenOut) -> @location(0) vec4f {
+  let t = u.time;
+  let q = in.p * 1.3 + vec2f(t * 0.03, -t * 0.07);
+  let warp = fbm(q * 0.7 + vec2f(t * 0.02, 0.0));
+  let f = fbm(q + warp * 1.4);
+  // Thicker low down, where it pools, and swelling a little on the beat.
+  let pool = 0.6 + 0.4 * smoothstep(0.8, -1.0, in.p.y);
+  let density = smoothstep(0.36, 0.8, f) * pool * (1.0 + 0.4 * w.misc.x);
+  let world = vec3f(unproject(in.p, 3.0), 3.0);
+  // Drifts of grey, verdigris and cobalt smoke.
+  let hue = fbm(in.p * 0.6 + vec2f(-t * 0.015, t * 0.01) + warp);
+  var tint = mix(vec3f(0.5, 0.51, 0.54), vec3f(0.33, 0.6, 0.5), smoothstep(0.5, 0.68, hue));
+  tint = mix(tint, vec3f(0.24, 0.36, 0.82), smoothstep(0.42, 0.28, hue));
+  let col = tint * steam_light(world) * mix(0.45, 1.0, u.live);
+  return vec4f(col, min(density * 0.57, 0.8));
+}
+
 // ---------------------------------------------------------------- sparks and dust
 
 struct SparkIn {
   @location(0) a: vec4f, // position, size
-  @location(1) b: vec4f, // velocity, kind (0 spark, 1 mote)
+  @location(1) b: vec4f, // velocity, kind (0 spark, 1 mote, 2 ember)
   @location(2) c: vec4f, // life left (0..1), -, -, -
 };
 
@@ -530,6 +814,12 @@ fn vs_spark(@builtin(vertex_index) vi: u32, in: SparkIn) -> SparkOut {
 @fragment
 fn fs_spark(in: SparkOut) -> @location(0) vec4f {
   let r2 = dot(in.q, in.q);
+  if (in.info.x > 1.5) {
+    // An ember: a dull orange glow that flickers as it floats up.
+    let life = in.info.y;
+    let flicker = 0.7 + 0.3 * sin(u.time * 23.0 + in.world.x * 300.0);
+    return vec4f(vec3f(1.0, 0.4, 0.08) * exp(-r2 * 2.5) * life * flicker * 0.9 * u.live, 1.0);
+  }
   if (in.info.x < 0.5) {
     // White-hot core cooling to orange as it dies.
     let life = in.info.y;
@@ -539,9 +829,11 @@ fn fs_spark(in: SparkOut) -> @location(0) vec4f {
   }
   // A mote is only seen when a lamp catches it.
   var lit = 0.0;
-  for (var i = 0; i < 3; i++) {
+  for (var i = 0; i < LIGHTS; i++) {
     let d = w.light_pos[i].xyz - in.world;
-    lit += length(w.light_col[i].rgb) / (1.0 + dot(d, d) * 3.0);
+    var c = length(lamp(i, in.world)) * 0.4;
+    if (i < POINT_LAMPS) { c = length(w.light_col[i].rgb) / (1.0 + dot(d, d) * 3.0); }
+    lit += c;
   }
   let fade = sin(3.14159 * clamp(in.info.y, 0.0, 1.0));
   return vec4f(vec3f(1.0, 0.95, 0.85) * exp(-r2 * 4.0) * lit * 0.12 * fade * u.live, 1.0);
@@ -557,7 +849,7 @@ fn screen_of(p: vec3f) -> vec2f {
 fn fs_glow(in: ScreenOut) -> @location(0) vec4f {
   var col = vec3f(0.0);
   var lit = 0.0;
-  for (var i = 0; i < 3; i++) {
+  for (var i = 0; i < POINT_LAMPS; i++) {
     let s = screen_of(w.light_pos[i].xyz);
     let d = in.p - s;
     let r = length(d);
@@ -567,9 +859,17 @@ fn fs_glow(in: ScreenOut) -> @location(0) vec4f {
     col += lamp * exp(-abs(d.y) * 120.0) * exp(-abs(d.x) * 2.2) * 0.035;
     lit += exp(-r * r * 2.0);
   }
-  // Haze drifting up through the lamplight.
+  // Haze drifting up through the lamplight, and the spotlights' pools sweeping through it.
   let haze = fbm(in.p * 1.6 + vec2f(u.time * 0.02, -u.time * 0.06));
   col += vec3f(1.0, 0.85, 0.65) * haze * haze * lit * 0.05;
+  for (var i = POINT_LAMPS; i < LIGHTS; i++) {
+    for (var k = 0; k < 3; k++) {
+      // Sample the beam at a few depths to suggest a shaft through the air.
+      let z = 1.6 + f32(k) * 0.7;
+      let pool = lamp(i, vec3f(unproject(in.p, z), z));
+      col += pool * (0.3 + haze) * 0.012;
+    }
+  }
   return vec4f(col * u.live, 1.0);
 }
 
