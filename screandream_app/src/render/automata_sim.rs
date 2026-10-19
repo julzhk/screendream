@@ -17,6 +17,9 @@
 //! palette. A handful of [`ScreenWarp`]s (lenses, swirls, shear bands and beat shockwaves)
 //! traverse the screen on top.
 
+pub use crate::render::sim_math::Rng;
+use crate::render::sim_math::{add, cross, dot, length, normalize, rotate, scale, sub};
+
 /// Side of the largest grid; every automaton's cells fit in a `GRID`×`GRID` texture layer.
 pub const GRID: usize = 128;
 /// Grids are stored with a one-cell dead border so neighbour lookups need no bounds checks.
@@ -185,37 +188,6 @@ const NEIGHBOURS: [isize; 8] = {
 
 fn idx(x: usize, y: usize) -> usize {
     (y + 1) * STRIDE + x + 1
-}
-
-/// xorshift64: small, fast and good enough for visuals.
-pub struct Rng(u64);
-
-impl Rng {
-    pub fn new(seed: u64) -> Self {
-        Self(seed | 1)
-    }
-
-    pub fn next_f32(&mut self) -> f32 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        (self.0 >> 40) as f32 / (1u64 << 24) as f32
-    }
-
-    pub fn uniform(&mut self, lo: f32, hi: f32) -> f32 {
-        lo + (hi - lo) * self.next_f32()
-    }
-
-    pub fn pick(&mut self, n: usize) -> usize {
-        ((self.next_f32() * n as f32) as usize).min(n - 1)
-    }
-
-    fn unit_vector(&mut self) -> [f32; 3] {
-        let z = self.uniform(-1.0, 1.0);
-        let angle = self.uniform(0.0, std::f32::consts::TAU);
-        let r = (1.0 - z * z).max(0.0).sqrt();
-        [r * angle.cos(), r * angle.sin(), z]
-    }
 }
 
 pub struct Automaton {
@@ -1191,46 +1163,4 @@ impl AutomataSim {
             life: 2.0 * span / speed,
         }
     }
-}
-
-// Small vector helpers.
-fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn scale(a: [f32; 3], s: f32) -> [f32; 3] {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn length(a: [f32; 3]) -> f32 {
-    dot(a, a).sqrt()
-}
-
-fn normalize(a: [f32; 3]) -> [f32; 3] {
-    scale(a, 1.0 / length(a).max(1e-6))
-}
-
-/// Rodrigues' rotation of `v` about unit `axis` by `angle` radians.
-fn rotate(v: [f32; 3], axis: [f32; 3], angle: f32) -> [f32; 3] {
-    let (sin, cos) = angle.sin_cos();
-    add(
-        add(scale(v, cos), scale(cross(axis, v), sin)),
-        scale(axis, dot(axis, v) * (1.0 - cos)),
-    )
 }

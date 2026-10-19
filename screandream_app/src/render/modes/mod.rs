@@ -8,7 +8,9 @@ mod automata;
 mod bubbles;
 mod canyon;
 mod circuits;
+mod clockwork;
 mod crystal;
+mod neurons;
 mod windmill;
 
 use crate::render::{renderer::VisualizerUniform, scene_mesh::SceneMesh};
@@ -17,13 +19,15 @@ pub use automata::AutomataMode;
 pub use bubbles::BubblesMode;
 pub use canyon::CanyonMode;
 pub use circuits::CircuitsMode;
+pub use clockwork::ClockworkMode;
 pub use crystal::CrystalMode;
+pub use neurons::NeuronsMode;
 pub use windmill::WindmillMode;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Mode shown first when the app starts.
-pub const FIRST_MODE: &str = AutomataMode::NAME;
+pub const FIRST_MODE: &str = ClockworkMode::NAME;
 
 pub struct ModeContext<'a> {
     pub device: &'a wgpu::Device,
@@ -62,6 +66,8 @@ pub fn build_all(ctx: &ModeContext, scene: &SceneMesh) -> Vec<Box<dyn Visualizer
         Box::new(CircuitsMode::new(ctx)),
         Box::new(BubblesMode::new(ctx)),
         Box::new(AutomataMode::new(ctx)),
+        Box::new(NeuronsMode::new(ctx)),
+        Box::new(ClockworkMode::new(ctx)),
     ]
 }
 
@@ -105,6 +111,22 @@ pub(crate) fn pipeline_with_blend(
     spec: PipelineSpec,
     blend: wgpu::BlendState,
 ) -> wgpu::RenderPipeline {
+    let compare = if spec.depth_write {
+        wgpu::CompareFunction::Less
+    } else {
+        wgpu::CompareFunction::Always
+    };
+    pipeline_with_depth(ctx, spec, blend, compare)
+}
+
+/// Like [`pipeline_with_blend`] with an explicit depth test, for layers that are hidden by
+/// what is in front of them without hiding anything themselves (shadows, sparks).
+pub(crate) fn pipeline_with_depth(
+    ctx: &ModeContext,
+    spec: PipelineSpec,
+    blend: wgpu::BlendState,
+    depth_compare: wgpu::CompareFunction,
+) -> wgpu::RenderPipeline {
     ctx.device
         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(spec.label),
@@ -129,11 +151,7 @@ pub(crate) fn pipeline_with_blend(
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: spec.depth_write,
-                depth_compare: if spec.depth_write {
-                    wgpu::CompareFunction::Less
-                } else {
-                    wgpu::CompareFunction::Always
-                },
+                depth_compare,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),

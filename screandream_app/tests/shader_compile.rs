@@ -83,3 +83,19 @@ fn automata_shader_is_valid_wgsl() {
         include_str!("../src/render/shaders/automata.wgsl"),
     );
 }
+
+#[test]
+fn neurons_shader_is_valid_wgsl() {
+    validate_with_common(
+        "neurons.wgsl",
+        include_str!("../src/render/shaders/neurons.wgsl"),
+    );
+}
+
+#[test]
+fn clockwork_shader_is_valid_wgsl() {
+    validate_with_common(
+        "clockwork.wgsl",
+        include_str!("../src/render/shaders/clockwork.wgsl"),
+    );
+}

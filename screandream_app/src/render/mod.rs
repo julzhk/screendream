@@ -1,6 +1,7 @@
 pub mod automata_sim;
 pub mod bubble_sim;
 pub mod fractal_curves;
+pub mod gear_sim;
 #[cfg(feature = "gpu-render")]
 pub mod gpu;
 pub mod mode_director;
@@ -8,5 +9,7 @@ pub mod mode_director;
 pub mod modes;
 #[cfg(feature = "gpu-render")]
 pub mod overlay;
+pub mod neuron_sim;
 pub mod renderer;
 pub mod scene_mesh;
+pub mod sim_math;
