@@ -5,6 +5,7 @@
 //! To add a mode: implement [`VisualizerMode`] in a new file and register it in [`build_all`].
 
 mod automata;
+mod beacons;
 mod bubbles;
 mod canyon;
 mod circuits;
@@ -16,6 +17,7 @@ mod windmill;
 use crate::render::{renderer::VisualizerUniform, scene_mesh::SceneMesh};
 
 pub use automata::AutomataMode;
+pub use beacons::BeaconsMode;
 pub use bubbles::BubblesMode;
 pub use canyon::CanyonMode;
 pub use circuits::CircuitsMode;
@@ -27,7 +29,7 @@ pub use windmill::WindmillMode;
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Mode shown first when the app starts.
-pub const FIRST_MODE: &str = ClockworkMode::NAME;
+pub const FIRST_MODE: &str = BeaconsMode::NAME;
 
 pub struct ModeContext<'a> {
     pub device: &'a wgpu::Device,
@@ -68,6 +70,7 @@ pub fn build_all(ctx: &ModeContext, scene: &SceneMesh) -> Vec<Box<dyn Visualizer
         Box::new(AutomataMode::new(ctx)),
         Box::new(NeuronsMode::new(ctx)),
         Box::new(ClockworkMode::new(ctx)),
+        Box::new(BeaconsMode::new(ctx)),
     ]
 }
 

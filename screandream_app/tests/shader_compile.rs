@@ -99,3 +99,11 @@ fn clockwork_shader_is_valid_wgsl() {
         include_str!("../src/render/shaders/clockwork.wgsl"),
     );
 }
+
+#[test]
+fn beacons_shader_is_valid_wgsl() {
+    validate_with_common(
+        "beacons.wgsl",
+        include_str!("../src/render/shaders/beacons.wgsl"),
+    );
+}

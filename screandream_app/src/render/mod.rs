@@ -1,4 +1,5 @@
 pub mod automata_sim;
+pub mod beacon_sim;
 pub mod bubble_sim;
 pub mod fractal_curves;
 pub mod gear_sim;
