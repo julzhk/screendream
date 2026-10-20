@@ -29,35 +29,14 @@ devices: it captures system audio directly through ScreenCaptureKit.
 
 ## Gallery
 
-### Visual modes
+### Some of the visual modes
 
-| | |
-|:---:|:---:|
-| <img src="docs/media/bubbles.svg" alt="Bubbles mode" width="420"><br>**Bubbles**<br><sub>Iridescent bubbles rise through a turquoise Mediterranean sea and refract it like real lenses.</sub> | <img src="docs/media/canyon.svg" alt="Canyon mode" width="420"><br>**Canyon**<br><sub>Fly down a winding planetary canyon whose walls are raised by the music, with a ringed planet and aurora overhead.</sub> |
-| <img src="docs/media/windmill.svg" alt="Windmills mode" width="420"><br>**Windmills**<br><sub>Glide over summer farmland where every windmill spins to its own frequency: bass mills are big and stately, treble mills small and quick.</sub> | <img src="docs/media/circuits.svg" alt="Circuits mode" width="420"><br>**Circuits**<br><sub>Eight pens, one per frequency band, etch white-hot fractal traces into a steel plate that folds in 3D.</sub> |
-| <img src="docs/media/crystal.svg" alt="Crystal mode" width="420"><br>**Crystal**<br><sub>The original mode: a crystal ringed by orbiting shards, set against a nebula and a spectrum arc.</sub> | |
+|                                                                                                                                                                                                                                               |                                                                                                                                                                                                                |
+|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------:|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
+|                 <img src="docs/media/fractal.jpg" alt="Fractal mode" width="420"><br>**Fractal**<br><sub>Iridescent fractals weaving traces rise through a turquoise Mediterranean sea and refract it like real lenses.</sub>                 | <img src="docs/media/canyon.jpg" alt="Canyon mode" width="420"><br>**Canyon**<br><sub>Fly down a winding planetary canyon whose walls are raised by the music, with a ringed planet and aurora overhead.</sub> |
+| <img src="docs/media/windmill.jpg" alt="Windmills mode" width="420"><br>**Windmills**<br><sub>Glide over summer farmland where every windmill spins to its own frequency: bass mills are big and stately, treble mills small and quick.</sub> |    <img src="docs/media/fractal.jpg" alt="Circuits mode" width="420"><br>**Circuits**<br><sub>Eight pens, one per frequency band, etch white-hot fractal traces into a steel plate that folds in 3D.</sub>     |
+|  <img src="docs/media/neurons.jpg" alt="Neurons mode" width="420"><br>**Neuron**<br><sub>Neurons forming and breaking: a network of cells, set against a microscope.</sub>                                  |                    <img src="docs/media/cells.jpg" alt="cells mode" width="420"><br>**generative code**<br><sub>Wolfram cellular automata, game of life and others, floating in space </sub>                    |                                                                                                                                                                                                              |
 
-### Video clips
-
-<!-- To add a clip: drag the .mp4 into this README in GitHub's web editor. GitHub uploads it and
-     inserts a playable player link. Alternatively, keep the poster image below and point its
-     link at the video file. -->
-
-<p align="center">
-  <a href="docs/media/showreel.mp4"><img src="docs/media/showreel.svg" alt="Showreel" width="860"></a><br>
-  <strong>Showreel</strong>: all five modes cut to one track
-</p>
-
-| | |
-|:---:|:---:|
-| <a href="docs/media/clip-1.mp4"><img src="docs/media/clip-1.svg" alt="Bubbles clip" width="420"></a><br>**Bubbles on a bass drop** | <a href="docs/media/clip-2.mp4"><img src="docs/media/clip-2.svg" alt="Canyon clip" width="420"></a><br>**Canyon fly-through** |
-
-> **Adding media:** the images above are placeholders in `docs/media/`. Save real screenshots
-> as PNGs (for example `docs/media/bubbles.png`) and change the `.svg` in the matching `src` to
-> `.png`. For videos, save the clip as `docs/media/clip-1.mp4` (and so on) and put a still frame
-> in place of its poster image.
-
----
 
 ## Installation
 
