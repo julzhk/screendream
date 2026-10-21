@@ -25,10 +25,13 @@ devices: it captures system audio directly through ScreenCaptureKit.
 - 🎛️ **Five visual modes.** Press <kbd>M</kbd> to switch between them.
 - 🔒 **Private by design.** Audio is analysed in memory only. Nothing is ever recorded or transmitted.
 
-## Screen grab 
+## Demo on Youtube 
+
 
 [![Watch Screendream screen grab on YouTube](https://img.youtube.com/vi/hX8msy3GHCE/hqdefault.jpg)](https://www.youtube.com/watch?v=hX8msy3GHCE)
 
+
+* [See on Youtube](https://www.youtube.com/watch?v=hX8msy3GHCE)
 ---
 
 ## Gallery
