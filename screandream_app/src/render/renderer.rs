@@ -21,11 +21,11 @@ impl Renderer {
             include_str!("shaders/canyon.wgsl"),
             include_str!("shaders/windmill.wgsl"),
             include_str!("shaders/circuits.wgsl"),
-            include_str!("shaders/bubbles.wgsl"),
             include_str!("shaders/automata.wgsl"),
             include_str!("shaders/neurons.wgsl"),
             include_str!("shaders/clockwork.wgsl"),
             include_str!("shaders/beacons.wgsl"),
+            include_str!("shaders/mandelbrot.wgsl"),
         ] {
             if !shader.contains("@vertex") || !shader.contains("@fragment") {
                 return Err("shader is missing a required entry point");

@@ -6,11 +6,11 @@
 
 mod automata;
 mod beacons;
-mod bubbles;
 mod canyon;
 mod circuits;
 mod clockwork;
 mod crystal;
+mod mandelbrot;
 mod neurons;
 mod windmill;
 
@@ -18,11 +18,11 @@ use crate::render::{renderer::VisualizerUniform, scene_mesh::SceneMesh};
 
 pub use automata::AutomataMode;
 pub use beacons::BeaconsMode;
-pub use bubbles::BubblesMode;
 pub use canyon::CanyonMode;
 pub use circuits::CircuitsMode;
 pub use clockwork::ClockworkMode;
 pub use crystal::CrystalMode;
+pub use mandelbrot::MandelbrotMode;
 pub use neurons::NeuronsMode;
 pub use windmill::WindmillMode;
 
@@ -66,11 +66,11 @@ pub fn build_all(ctx: &ModeContext, scene: &SceneMesh) -> Vec<Box<dyn Visualizer
         Box::new(CanyonMode::new(ctx)),
         Box::new(WindmillMode::new(ctx)),
         Box::new(CircuitsMode::new(ctx)),
-        Box::new(BubblesMode::new(ctx)),
         Box::new(AutomataMode::new(ctx)),
         Box::new(NeuronsMode::new(ctx)),
         Box::new(ClockworkMode::new(ctx)),
         Box::new(BeaconsMode::new(ctx)),
+        Box::new(MandelbrotMode::new(ctx)),
     ]
 }
 

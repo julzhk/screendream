@@ -69,14 +69,6 @@ fn circuits_shader_is_valid_wgsl() {
 }
 
 #[test]
-fn bubbles_shader_is_valid_wgsl() {
-    validate_with_common(
-        "bubbles.wgsl",
-        include_str!("../src/render/shaders/bubbles.wgsl"),
-    );
-}
-
-#[test]
 fn automata_shader_is_valid_wgsl() {
     validate_with_common(
         "automata.wgsl",
@@ -105,5 +97,13 @@ fn beacons_shader_is_valid_wgsl() {
     validate_with_common(
         "beacons.wgsl",
         include_str!("../src/render/shaders/beacons.wgsl"),
+    );
+}
+
+#[test]
+fn mandelbrot_shader_is_valid_wgsl() {
+    validate_with_common(
+        "mandelbrot.wgsl",
+        include_str!("../src/render/shaders/mandelbrot.wgsl"),
     );
 }

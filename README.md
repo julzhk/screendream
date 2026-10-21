@@ -25,6 +25,10 @@ devices: it captures system audio directly through ScreenCaptureKit.
 - 🎛️ **Five visual modes.** Press <kbd>M</kbd> to switch between them.
 - 🔒 **Private by design.** Audio is analysed in memory only. Nothing is ever recorded or transmitted.
 
+## Screen grab 
+
+[![Watch Screendream screen grab on YouTube](https://img.youtube.com/vi/hX8msy3GHCE/hqdefault.jpg)](https://www.youtube.com/watch?v=hX8msy3GHCE)
+
 ---
 
 ## Gallery
@@ -37,6 +41,8 @@ devices: it captures system audio directly through ScreenCaptureKit.
 | <img src="docs/media/windmill.jpg" alt="Windmills mode" width="420"><br>**Windmills**<br><sub>Glide over summer farmland where every windmill spins to its own frequency: bass mills are big and stately, treble mills small and quick.</sub> |    <img src="docs/media/fractal.jpg" alt="Circuits mode" width="420"><br>**Circuits**<br><sub>Eight pens, one per frequency band, etch white-hot fractal traces into a steel plate that folds in 3D.</sub>     |
 |  <img src="docs/media/neurons.jpg" alt="Neurons mode" width="420"><br>**Neuron**<br><sub>Neurons forming and breaking: a network of cells, set against a microscope.</sub>                                  |                    <img src="docs/media/cells.jpg" alt="cells mode" width="420"><br>**generative code**<br><sub>Wolfram cellular automata, game of life and others, floating in space </sub>                    |                                                                                                                                                                                                              |
 
+
+There's quite a few more too!
 
 ## Installation
 
